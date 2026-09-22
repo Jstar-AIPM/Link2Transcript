@@ -144,3 +144,30 @@ def test_malformed_cookie_pairs_are_ignored(tmp_path: Path):
         cookie_file_dir=tmp_path / "session",
     )
     assert service._cookie_pairs() == [("SESSDATA", "keepme")]
+
+
+def test_duration_limit_message_is_readable_in_hours(user_copy_checker):
+    """6 小时上限应该显示成「6 小时」而不是「360 分钟」。"""
+    from backend.app.core.messages import format_limit, video_too_long_message
+
+    assert format_limit(360) == "6 小时"
+    assert format_limit(180) == "3 小时"
+    assert format_limit(90) == "90 分钟"
+
+    message = video_too_long_message(7.5 * 3600, 360)
+    assert message == "该视频时长约 7.5 小时，超过 6 小时上限。请分段处理，或改用本地文件上传"
+    user_copy_checker(message)
+
+
+def test_real_duration_gate_uses_six_hour_limit():
+    stub = ProbeStub(probe_info=make_info(duration=7 * 3600), max_media_seconds=360 * 60,
+                     max_media_minutes=360)
+    with pytest.raises(AppError) as exc_info:
+        stub.probe("https://www.bilibili.com/video/BV1BqhB6nEdN")
+    assert exc_info.value.code == "VIDEO_TOO_LONG"
+    assert "超过 6 小时上限" in exc_info.value.message
+
+    # 5 小时播客必须放行
+    ok = ProbeStub(probe_info=make_info(duration=5 * 3600), max_media_seconds=360 * 60,
+                   max_media_minutes=360)
+    assert ok.probe("https://www.bilibili.com/video/BV1BqhB6nEdN").duration_seconds == 5 * 3600

@@ -8,6 +8,11 @@ from time import perf_counter
 
 from backend.app.core.errors import AppError
 from backend.app.core.filenames import sanitize_filename
+from backend.app.core.messages import (
+    file_too_long_message,
+    format_duration,
+    incomplete_audio_message,
+)
 from backend.app.schemas.task import (
     ExtractMethod,
     MediaType,
@@ -28,13 +33,6 @@ from backend.app.services.transcription_service import TranscriptionService
 
 logger = logging.getLogger(__name__)
 
-LOCAL_DURATION_TOO_LONG_TEMPLATE = (
-    "该文件时长约 {hours}，超过当前上限 {limit_minutes} 分钟。建议分段处理后重试"
-)
-INCOMPLETE_AUDIO_MESSAGE = (
-    "获取到的音频不完整（仅 {actual}，视频全长 {declared}），无法生成完整逐字稿。"
-    "你可以改用本地文件上传"
-)
 # 实际音频短于声明时长的这个比例时，判定为不完整（防意外截断的通用安全网）。
 MIN_AUDIO_COVERAGE_RATIO = 0.9
 
@@ -51,21 +49,6 @@ SPEECH_ERROR_MESSAGES: dict[str, dict[SourceType, str]] = {
         SourceType.PLATFORM_URL: "未能从该视频中提取到语音内容。请确认视频内容后重试。",
     },
 }
-
-
-def _format_hours(seconds: float) -> str:
-    hours = seconds / 3600
-    if hours >= 1:
-        return f"{hours:.1f} 小时"
-    return f"{int(seconds // 60)} 分钟"
-
-
-def _format_duration(seconds: float) -> str:
-    if seconds >= 3600:
-        return f"{seconds / 3600:.1f} 小时"
-    if seconds >= 60:
-        return f"{int(seconds // 60)} 分钟"
-    return f"{int(seconds)} 秒"
 
 
 def _rethrow_with_source_wording(exc: AppError, source_type: SourceType) -> None:
@@ -315,10 +298,7 @@ class TaskProcessor:
             return
         raise AppError(
             "VIDEO_TOO_LONG",
-            LOCAL_DURATION_TOO_LONG_TEMPLATE.format(
-                hours=_format_hours(duration_seconds),
-                limit_minutes=self.max_media_minutes,
-            ),
+            file_too_long_message(duration_seconds, self.max_media_minutes),
         )
 
     def _ensure_audio_complete(self, audio_path: Path, declared_seconds: float | None) -> None:
@@ -335,10 +315,7 @@ class TaskProcessor:
         if actual < declared_seconds * MIN_AUDIO_COVERAGE_RATIO:
             raise AppError(
                 "DOWNLOAD_INCOMPLETE",
-                INCOMPLETE_AUDIO_MESSAGE.format(
-                    actual=_format_duration(actual),
-                    declared=_format_duration(declared_seconds),
-                ),
+                incomplete_audio_message(actual, declared_seconds),
             )
 
     @staticmethod
