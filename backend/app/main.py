@@ -12,10 +12,13 @@ from backend.app.api.tasks import router as tasks_router
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
 from backend.app.core.logging import configure_logging
+from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
+from backend.app.services.platform_service import PlatformService
 from backend.app.services.processor import TaskProcessor
 from backend.app.services.startup_service import run_startup_checks
+from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
 
@@ -33,13 +36,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app_settings.whisper_compute_type,
     )
     export_service = ExportService(app_settings.outputs_dir)
+    platform_service = PlatformService(
+        timeout_seconds=min(60, app_settings.platform_download_timeout_seconds),
+        proxy=app_settings.platform_proxy,
+    )
+    download_service = DownloadService(
+        cookie=app_settings.bilibili_cookie,
+        cookie_file_dir=app_settings.session_dir,
+        proxy=app_settings.platform_proxy,
+        max_media_seconds=app_settings.max_media_seconds,
+        max_media_minutes=app_settings.max_media_minutes,
+        max_download_bytes=app_settings.max_download_bytes,
+        rate_limit_kbps=app_settings.platform_rate_limit_kbps,
+    )
+    subtitle_service = SubtitleService()
     processor = TaskProcessor(
         task_service=task_service,
         media_service=media_service,
         transcription_service=transcription_service,
         export_service=export_service,
+        download_service=download_service,
+        subtitle_service=subtitle_service,
         uploads_dir=app_settings.uploads_dir,
         audio_dir=app_settings.audio_dir,
+        downloads_dir=app_settings.downloads_dir,
+        max_media_seconds=app_settings.max_media_seconds,
+        max_media_minutes=app_settings.max_media_minutes,
         max_workers=app_settings.task_max_workers,
     )
 
@@ -56,6 +78,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.media_service = media_service
     app.state.transcription_service = transcription_service
     app.state.export_service = export_service
+    app.state.platform_service = platform_service
+    app.state.download_service = download_service
+    app.state.subtitle_service = subtitle_service
     app.state.processor = processor
 
     @app.exception_handler(AppError)

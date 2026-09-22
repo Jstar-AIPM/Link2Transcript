@@ -4,7 +4,11 @@ import json
 from pathlib import Path
 
 from backend.app.core.errors import AppError
-from backend.app.schemas.task import TranscriptResult
+from backend.app.schemas.task import (
+    TranscriptResult,
+    processing_method_label,
+    source_type_label,
+)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -51,13 +55,19 @@ class ExportService:
         lines = [
             f"# {result.original_filename}",
             "",
-            "- 来源：本地文件",
-            f"- 处理方式：语音转写",
-            f"- 生成时间：{result.generated_at.isoformat()}",
-            "",
-            "## Transcript",
-            "",
+            f"- 来源：{source_type_label(result.source_type)}",
         ]
+        if result.source_url:
+            lines.append(f"- 原始地址：{result.source_url}")
+        lines.extend(
+            [
+                f"- 处理方式：{processing_method_label(result.processing_method)}",
+                f"- 生成时间：{result.generated_at.isoformat()}",
+                "",
+                "## Transcript",
+                "",
+            ]
+        )
         lines.extend(
             f"[{format_timestamp(segment.start)}] {segment.text}" for segment in result.segments
         )

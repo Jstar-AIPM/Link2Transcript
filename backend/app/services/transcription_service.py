@@ -3,9 +3,19 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import TranscriptSegment
+
+
+# 有效语音占比低于此值，即认为内容中没有人声（如纯音乐、环境音、静音文件）。
+# 实测参考：一条以音乐为主的 122 秒视频，VAD 后仅剩 2.2 秒（1.8%）。
+MIN_SPEECH_RATIO = 0.05
+MIN_SPEECH_SECONDS = 0.5
+
+DEFAULT_SILENT_AUDIO_MESSAGE = "未检测到人声内容"
+DEFAULT_EMPTY_TRANSCRIPT_MESSAGE = "未能提取到语音内容"
 
 
 @dataclass(frozen=True)
@@ -60,7 +70,17 @@ class TranscriptionService:
                         ) from exc
         return self._model
 
-    def transcribe(self, audio_path: Path) -> Transcription:
+    def transcribe(
+        self,
+        audio_path: Path,
+        on_segment: Callable[[TranscriptSegment], None] | None = None,
+    ) -> Transcription:
+        """转写音频。
+
+        ``on_segment`` 是为止后阶段预留的逐个片段回调口子：faster-whisper 本身就
+        逐个片段产出结果，传入回调即可在解码过程中拿到新片段。阶段 2 不传该参数，
+        行为与阶段 1 完全一致。
+        """
         try:
             model = self._get_model()
             raw_segments, info = model.transcribe(
@@ -69,15 +89,21 @@ class TranscriptionService:
                 vad_filter=True,
                 beam_size=5,
             )
-            segments = [
-                TranscriptSegment(
-                    start=max(0.0, float(segment.start)),
-                    end=max(0.0, float(segment.end)),
-                    text=segment.text.strip(),
+            # VAD 结果在此时已经算好，可以在解码前就判定“没有人声”，不浪费算力。
+            self._ensure_speech_present(info)
+            segments: list[TranscriptSegment] = []
+            for raw_segment in raw_segments:
+                text = raw_segment.text.strip()
+                if not text:
+                    continue
+                segment = TranscriptSegment(
+                    start=max(0.0, float(raw_segment.start)),
+                    end=max(0.0, float(raw_segment.end)),
+                    text=text,
                 )
-                for segment in raw_segments
-                if segment.text.strip()
-            ]
+                segments.append(segment)
+                if on_segment is not None:
+                    on_segment(segment)
         except AppError:
             raise
         except Exception as exc:
@@ -85,7 +111,7 @@ class TranscriptionService:
 
         text = "\n".join(segment.text for segment in segments).strip()
         if not text:
-            raise AppError("EMPTY_TRANSCRIPT", "没有识别到可用的语音内容")
+            raise AppError("EMPTY_TRANSCRIPT", DEFAULT_EMPTY_TRANSCRIPT_MESSAGE)
         duration = getattr(info, "duration", None)
         language = getattr(info, "language", None)
         return Transcription(
@@ -94,3 +120,24 @@ class TranscriptionService:
             language=language,
             duration_seconds=float(duration) if duration is not None else None,
         )
+
+    @staticmethod
+    def _ensure_speech_present(info) -> None:
+        """根据 VAD 结果判定内容里到底有没有人声。
+
+        只对“整段几乎都是静音/音乐”这种明确情况报警，阈值取得很保守，
+        避免误伤“人声稀疏但确实有内容”的音视频。
+        """
+        duration = getattr(info, "duration", None)
+        duration_after_vad = getattr(info, "duration_after_vad", None)
+        if duration is None or duration_after_vad is None:
+            return
+        try:
+            total = float(duration)
+            speech = float(duration_after_vad)
+        except (TypeError, ValueError):
+            return
+        if total <= 0:
+            return
+        if speech < MIN_SPEECH_SECONDS or (speech / total) < MIN_SPEECH_RATIO:
+            raise AppError("SILENT_AUDIO", DEFAULT_SILENT_AUDIO_MESSAGE)

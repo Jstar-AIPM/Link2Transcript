@@ -10,33 +10,58 @@
       main { width: min(820px, calc(100% - 32px)); margin: 48px auto; }
       section { background: white; border: 1px solid #dde3ec; border-radius: 14px; padding: 24px; margin-top: 18px; }
       h1 { margin-bottom: 8px; } .muted { color: #667085; }
-      input { display: block; margin: 18px 0; max-width: 100%; }
+      input[type="file"] { display: block; margin: 14px 0; max-width: 100%; }
+      input[type="url"] { display: block; width: 100%; box-sizing: border-box; margin: 14px 0; padding: 10px 12px; border: 1px solid #cfd6e4; border-radius: 8px; font-size: 15px; }
+      .modes { display: flex; gap: 8px; margin-bottom: 4px; }
+      .modes button { background: #eef2f9; color: #172033; border: 1px solid #dde3ec; }
+      .modes button[aria-selected="true"] { background: #2563eb; color: white; border-color: #2563eb; }
       button, a.button { border: 0; border-radius: 8px; background: #2563eb; color: white; padding: 10px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
       button:disabled { opacity: .5; cursor: wait; }
       #status { font-weight: 600; } #error { color: #b42318; white-space: pre-wrap; }
       #task-detail { color: #667085; margin-top: 10px; }
+      #meta { color: #667085; margin-bottom: 12px; line-height: 1.7; }
       #transcript { white-space: pre-wrap; line-height: 1.7; max-height: 480px; overflow: auto; }
-      .downloads { display: flex; gap: 10px; margin-top: 18px; }
+      .downloads { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
+      .hint { color: #667085; margin: 6px 0 0; font-size: 14px; }
       [hidden] { display: none !important; }
     </style>
   </head>
   <body>
     <main>
       <h1>逐字稿提取器</h1>
-      <p class="muted">上传本地 MP3、M4A、WAV、MP4 或 MOV 文件，生成 Markdown 和 TXT 逐字稿。</p>
+      <p class="muted">上传本地音频 / 视频文件，或粘贴 B 站视频链接，生成 Markdown 和 TXT 逐字稿。</p>
+
       <section>
-        <label for="file">选择音频或视频</label>
-        <input id="file" type="file" accept=".mp3,.m4a,.wav,.mp4,.mov,audio/*,video/mp4,video/quicktime" />
-        <p id="limit" class="muted"></p>
+        <div class="modes" role="tablist">
+          <button id="mode-file" role="tab" aria-selected="true">上传本地文件</button>
+          <button id="mode-url" role="tab" aria-selected="false">粘贴 B 站链接</button>
+        </div>
+
+        <div id="panel-file">
+          <label for="file">选择音频或视频</label>
+          <input id="file" type="file" accept=".mp3,.m4a,.wav,.mp4,.mov,audio/*,video/mp4,video/quicktime" />
+          <p id="limit" class="muted"></p>
+        </div>
+
+        <div id="panel-url" hidden>
+          <label for="url">B 站视频链接</label>
+          <input id="url" type="url" placeholder="https://www.bilibili.com/video/BV..." autocomplete="off" />
+          <p class="hint">支持单个视频链接。多 P 视频请粘贴某一个分集的链接。</p>
+          <p id="url-limit" class="muted"></p>
+        </div>
+
         <button id="submit">开始提取</button>
       </section>
+
       <section id="progress" hidden>
         <div id="status"></div>
         <div id="task-detail"></div>
         <div id="error"></div>
       </section>
+
       <section id="result" hidden>
         <h2 id="filename"></h2>
+        <div id="meta"></div>
         <div id="transcript"></div>
         <div class="downloads">
           <a id="markdown" class="button">下载 Markdown</a>
@@ -46,14 +71,21 @@
     </main>
     <script>
       const fileInput = document.querySelector('#file');
+      const urlInput = document.querySelector('#url');
       const submit = document.querySelector('#submit');
       const progress = document.querySelector('#progress');
       const statusNode = document.querySelector('#status');
       const errorNode = document.querySelector('#error');
       const detailNode = document.querySelector('#task-detail');
+      const metaNode = document.querySelector('#meta');
       const resultNode = document.querySelector('#result');
+      const panelFile = document.querySelector('#panel-file');
+      const panelUrl = document.querySelector('#panel-url');
+      const modeFile = document.querySelector('#mode-file');
+      const modeUrl = document.querySelector('#mode-url');
       const activeTaskKey = 'transcript-extractor.active-task-id';
-      let config = { max_upload_mb: 500, task_poll_interval_seconds: 2 };
+      let config = { max_upload_mb: 2048, task_poll_interval_seconds: 2, max_media_minutes: 0 };
+      let currentMode = 'file';
       let currentTask = null;
       let elapsedTimer = null;
 
@@ -68,6 +100,15 @@
           : `${minutes}分${String(secs).padStart(2, '0')}秒`;
       };
 
+      function switchMode(mode) {
+        currentMode = mode;
+        modeFile.setAttribute('aria-selected', String(mode === 'file'));
+        modeUrl.setAttribute('aria-selected', String(mode === 'url'));
+        panelFile.hidden = mode !== 'file';
+        panelUrl.hidden = mode !== 'url';
+        errorNode.textContent = '';
+      }
+
       function renderTaskDetail() {
         if (!currentTask) { detailNode.textContent = ''; return; }
         const terminal = ['succeeded', 'failed'].includes(currentTask.status);
@@ -77,6 +118,9 @@
         const parts = [terminal ? `总耗时：${formatDuration(elapsed)}` : `任务仍在运行 · 已用时：${formatDuration(elapsed)}`];
         if (currentTask.media_duration_seconds) {
           parts.push(`媒体时长：${formatDuration(currentTask.media_duration_seconds)}`);
+        }
+        if (currentTask.estimated_remaining_seconds) {
+          parts.push(`预计还需约：${formatDuration(currentTask.estimated_remaining_seconds)}`);
         }
         detailNode.textContent = parts.join(' · ');
       }
@@ -92,9 +136,21 @@
       }
 
       async function jsonOrError(response) {
-        const payload = await response.json();
+        let payload;
+        try {
+          payload = await response.json();
+        } catch (_) {
+          throw new Error('服务暂时不可用，请稍后重试');
+        }
         if (!response.ok) throw new Error(payload.error?.message || '请求失败');
         return payload;
+      }
+
+      function renderMeta(task) {
+        const parts = [];
+        if (task.source_url) parts.push(`来源：${task.source_url}`);
+        parts.push(`处理方式：${task.processing_method_label}`);
+        metaNode.textContent = parts.join('\n');
       }
 
       async function poll(taskId) {
@@ -116,6 +172,7 @@
               stopElapsedTimer();
               const result = await jsonOrError(await fetch(`/api/v1/tasks/${taskId}/result`));
               document.querySelector('#filename').textContent = result.original_filename;
+              renderMeta(task);
               document.querySelector('#transcript').textContent = result.text;
               document.querySelector('#markdown').href = task.artifacts.markdown;
               document.querySelector('#txt').href = task.artifacts.txt;
@@ -132,34 +189,78 @@
         }
       }
 
-      submit.addEventListener('click', async () => {
-        const file = fileInput.files[0];
-        if (!file) { errorNode.textContent = '请先选择文件'; progress.hidden = false; return; }
-        if (file.size > config.max_upload_mb * 1024 * 1024) { errorNode.textContent = `文件不能超过 ${config.max_upload_mb} MB`; progress.hidden = false; return; }
-        submit.disabled = true; resultNode.hidden = true; progress.hidden = false;
-        currentTask = null; detailNode.textContent = '';
-        errorNode.textContent = ''; statusNode.textContent = '正在上传文件';
+      function looksLikeBilibiliLink(value) {
+        return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv)\//i.test(value);
+      }
+
+      async function startTask(request) {
+        submit.disabled = true;
+        resultNode.hidden = true;
+        progress.hidden = false;
+        currentTask = null;
+        detailNode.textContent = '';
+        metaNode.textContent = '';
+        errorNode.textContent = '';
+        statusNode.textContent = '正在提交任务';
         try {
-          const form = new FormData(); form.append('file', file);
-          const created = await jsonOrError(await fetch('/api/v1/tasks', { method: 'POST', body: form }));
+          const created = await jsonOrError(await request());
           await poll(created.task_id);
         } catch (error) {
           errorNode.textContent = error.message;
         } finally {
           submit.disabled = false;
         }
+      }
+
+      submit.addEventListener('click', async () => {
+        if (currentMode === 'url') {
+          const url = urlInput.value.trim();
+          if (!url) { progress.hidden = false; errorNode.textContent = '请先粘贴 B 站视频链接'; return; }
+          if (!looksLikeBilibiliLink(url)) {
+            progress.hidden = false;
+            errorNode.textContent = '链接格式不正确，请粘贴完整的 B 站视频链接';
+            return;
+          }
+          await startTask(() => fetch('/api/v1/tasks/from-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url }),
+          }));
+          return;
+        }
+
+        const file = fileInput.files[0];
+        if (!file) { progress.hidden = false; errorNode.textContent = '请先选择文件'; return; }
+        if (file.size > config.max_upload_mb * 1024 * 1024) {
+          progress.hidden = false;
+          errorNode.textContent = `文件不能超过 ${config.max_upload_mb} MB`;
+          return;
+        }
+        await startTask(() => {
+          const form = new FormData();
+          form.append('file', file);
+          return fetch('/api/v1/tasks', { method: 'POST', body: form });
+        });
       });
+
+      modeFile.addEventListener('click', () => switchMode('file'));
+      modeUrl.addEventListener('click', () => switchMode('url'));
 
       async function initialize() {
         try {
           config = await jsonOrError(await fetch('/api/v1/config'));
-          document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
         } catch (_) {
-          document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
+          /* 使用默认值兜底 */
         }
+        document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
+        document.querySelector('#url-limit').textContent = config.max_media_minutes > 0
+          ? `单个视频时长上限：${config.max_media_minutes} 分钟。超长内容建议分段处理。`
+          : '不限制内容时长。无字幕的内容需要本地转写，页面会持续显示进度与预计耗时。';
+
         const taskId = localStorage.getItem(activeTaskKey);
         if (!taskId) return;
-        submit.disabled = true; progress.hidden = false;
+        submit.disabled = true;
+        progress.hidden = false;
         statusNode.textContent = '正在恢复上次任务';
         try {
           await poll(taskId);
