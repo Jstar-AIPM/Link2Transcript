@@ -266,3 +266,27 @@ def test_audio_covering_most_of_the_video_is_accepted(settings):
         media_service=FakeMediaService(duration_seconds=178.0),
     )
     assert record.status == TaskStatus.SUCCEEDED
+
+
+def test_no_speech_in_video_uses_video_wording(settings, user_copy_checker):
+    """链接来源的“没有人声”提示应该针对视频，而不是文件。"""
+    from backend.tests.test_processor import SilentTranscriptionService
+
+    record = run(settings, PlatformDownloadStub(info=make_probe_info()), SilentTranscriptionService())
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "SILENT_AUDIO"
+    assert "视频" in record.error.message
+    assert "文件中" not in record.error.message
+    user_copy_checker(record.error.message)
+
+
+def test_long_video_is_not_blocked_by_duration(settings):
+    """默认不限制时长：一条 5 小时视频应该照常进入下载与转写。"""
+    import dataclasses
+
+    unlimited = dataclasses.replace(settings, max_media_minutes=0)
+    stub = PlatformDownloadStub(info=make_probe_info(duration=5 * 3600))
+    record = run(unlimited, stub, media_service=FakeMediaService(duration_seconds=5 * 3600))
+    assert record.status == TaskStatus.SUCCEEDED
+    assert stub.downloaded == [VIDEO_URL]

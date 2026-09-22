@@ -84,7 +84,7 @@
       const modeFile = document.querySelector('#mode-file');
       const modeUrl = document.querySelector('#mode-url');
       const activeTaskKey = 'transcript-extractor.active-task-id';
-      let config = { max_upload_mb: 2048, task_poll_interval_seconds: 2, max_media_minutes: 180 };
+      let config = { max_upload_mb: 2048, task_poll_interval_seconds: 2, max_media_minutes: 0 };
       let currentMode = 'file';
       let currentTask = null;
       let elapsedTimer = null;
@@ -253,8 +253,9 @@
           /* 使用默认值兜底 */
         }
         document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
-        document.querySelector('#url-limit').textContent =
-          `单个视频时长上限：${config.max_media_minutes} 分钟。超长内容建议分段处理。`;
+        document.querySelector('#url-limit').textContent = config.max_media_minutes > 0
+          ? `单个视频时长上限：${config.max_media_minutes} 分钟。超长内容建议分段处理。`
+          : '不限制内容时长。无字幕的内容需要本地转写，页面会持续显示进度与预计耗时。';
 
         const taskId = localStorage.getItem(activeTaskKey);
         if (!taskId) return;

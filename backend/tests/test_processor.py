@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,18 @@ class FailingExtractionMediaService(FakeMediaService):
 class FailingTranscriptionService:
     def transcribe(self, audio_path: Path) -> Transcription:
         raise AppError("TRANSCRIPTION_FAILED", "转写未完成，请重试")
+
+
+class SilentTranscriptionService:
+    """模拟“内容里没有人声”：服务层抛出通用提示，由编排层换成具体说法。"""
+
+    def transcribe(self, audio_path: Path) -> Transcription:
+        raise AppError("SILENT_AUDIO", "未检测到人声内容")
+
+
+class LongMediaService(FakeMediaService):
+    def __init__(self, duration_seconds: float = 20_000.0) -> None:
+        super().__init__(duration_seconds=duration_seconds)
 
 
 class FailingExportService:
@@ -204,12 +217,9 @@ def test_processor_failures_enter_failed_state(
 
 
 def test_local_file_exceeding_duration_limit_fails(settings, user_copy_checker):
+    """限制被重新启用时（MAX_MEDIA_MINUTES 设为正整数）依然生效。"""
     tasks, task_id = create_local_task(settings, MediaType.AUDIO)
     processor = build_processor(settings)
-
-    class LongMediaService(FakeMediaService):
-        def inspect(self, source, expected_type):
-            return MediaInfo(duration_seconds=20_000.0, has_audio=True, has_video=False)
     processor.media_service = LongMediaService()
     processor.process(task_id)
     processor.shutdown()
@@ -218,4 +228,34 @@ def test_local_file_exceeding_duration_limit_fails(settings, user_copy_checker):
     assert record.error is not None
     assert record.error.code == "VIDEO_TOO_LONG"
     assert record.error.failed_stage == TaskStatus.VALIDATING
+    user_copy_checker(record.error.message)
+
+
+def test_duration_limit_is_disabled_by_default(settings):
+    """默认不限制内容时长：4-5 小时的播客也应该正常跑完。"""
+    unlimited = dataclasses.replace(settings, max_media_minutes=0)
+    assert unlimited.max_media_seconds == float("inf")
+
+    tasks, task_id = create_local_task(unlimited, MediaType.AUDIO)
+    processor = build_processor(unlimited)
+    processor.media_service = LongMediaService(duration_seconds=5 * 3600)
+    processor.process(task_id)
+    processor.shutdown()
+
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.SUCCEEDED
+    assert record.media_duration_seconds == 5 * 3600
+
+
+def test_no_speech_in_local_file_uses_file_wording(settings, user_copy_checker):
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    processor = build_processor(settings, transcription_service=SilentTranscriptionService())
+    processor.process(task_id)
+    processor.shutdown()
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "SILENT_AUDIO"
+    assert "文件中" in record.error.message
+    assert "请确认文件是否正确" in record.error.message
     user_copy_checker(record.error.message)

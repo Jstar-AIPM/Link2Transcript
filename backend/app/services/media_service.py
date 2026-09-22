@@ -68,9 +68,9 @@ class MediaService:
             raise AppError("INVALID_MEDIA_FILE", "文件已损坏或不是有效的音视频文件") from exc
 
         if not has_audio:
-            raise AppError("MEDIA_HAS_NO_AUDIO", "该文件没有可转写的音轨")
+            raise AppError("MEDIA_HAS_NO_AUDIO", "该文件不包含音轨，无法生成逐字稿。请确认文件是否正确。")
         if expected_type == MediaType.VIDEO and not has_video:
-            raise AppError("MEDIA_TYPE_MISMATCH", "文件内容与视频格式不匹配")
+            raise AppError("MEDIA_TYPE_MISMATCH", "文件内容与其扩展名不一致，无法处理。请确认文件是否正确。")
         return MediaInfo(duration_seconds=duration, has_audio=has_audio, has_video=has_video)
 
     def extract_audio(self, source: Path, destination: Path) -> Path:

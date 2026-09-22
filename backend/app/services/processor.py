@@ -38,6 +38,20 @@ INCOMPLETE_AUDIO_MESSAGE = (
 # 实际音频短于声明时长的这个比例时，判定为不完整（防意外截断的通用安全网）。
 MIN_AUDIO_COVERAGE_RATIO = 0.9
 
+# “没有人声”类错误的用户文案：同一错误码在不同来源下说人话。
+SPEECH_ERROR_MESSAGES: dict[str, dict[SourceType, str]] = {
+    "SILENT_AUDIO": {
+        SourceType.LOCAL_FILE: (
+            "未在文件中检测到人声。请确认文件是否正确，或更换包含人声的文件后重试。"
+        ),
+        SourceType.PLATFORM_URL: "未在该视频中检测到人声。请确认视频是否包含人声内容。",
+    },
+    "EMPTY_TRANSCRIPT": {
+        SourceType.LOCAL_FILE: "未能从文件中提取到语音内容。请确认文件是否正确，或更换文件后重试。",
+        SourceType.PLATFORM_URL: "未能从该视频中提取到语音内容。请确认视频内容后重试。",
+    },
+}
+
 
 def _format_hours(seconds: float) -> str:
     hours = seconds / 3600
@@ -52,6 +66,13 @@ def _format_duration(seconds: float) -> str:
     if seconds >= 60:
         return f"{int(seconds // 60)} 分钟"
     return f"{int(seconds)} 秒"
+
+
+def _rethrow_with_source_wording(exc: AppError, source_type: SourceType) -> None:
+    """把服务层的通用错误换成针对当前来源的具体说法，然后重新抛出。"""
+    message = SPEECH_ERROR_MESSAGES.get(exc.code, {}).get(source_type)
+    if message:
+        raise AppError(exc.code, message) from exc
 
 
 class TaskProcessor:
@@ -158,6 +179,7 @@ class TaskProcessor:
             audio_path=audio_path,
             fallback_duration=media_info.duration_seconds,
             processing_method=ProcessingMethod.SPEECH_TO_TEXT_LOCAL,
+            source_type=record.source_type,
             task_started=task_started,
         )
 
@@ -201,6 +223,7 @@ class TaskProcessor:
             audio_path=wav_path,
             fallback_duration=meta.duration_seconds,
             processing_method=ProcessingMethod.SPEECH_TO_TEXT_REMOTE,
+            source_type=record.source_type,
             task_started=task_started,
         )
 
@@ -242,11 +265,16 @@ class TaskProcessor:
         audio_path: Path,
         fallback_duration: float | None,
         processing_method: ProcessingMethod,
+        source_type: SourceType,
         task_started: float,
     ) -> None:
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
-        transcription = self.transcription_service.transcribe(audio_path)
+        try:
+            transcription = self.transcription_service.transcribe(audio_path)
+        except AppError as exc:
+            _rethrow_with_source_wording(exc, source_type)
+            raise
         self._log_stage(task_id, TaskStatus.TRANSCRIBING, stage_started)
 
         record = self.task_service.set_extraction(
