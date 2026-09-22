@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>逐字稿提取器</title>
+    <style>
+      :root { color-scheme: light; font-family: system-ui, -apple-system, sans-serif; }
+      body { margin: 0; background: #f5f7fa; color: #172033; }
+      main { width: min(820px, calc(100% - 32px)); margin: 48px auto; }
+      section { background: white; border: 1px solid #dde3ec; border-radius: 14px; padding: 24px; margin-top: 18px; }
+      h1 { margin-bottom: 8px; } .muted { color: #667085; }
+      input { display: block; margin: 18px 0; max-width: 100%; }
+      button, a.button { border: 0; border-radius: 8px; background: #2563eb; color: white; padding: 10px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
+      button:disabled { opacity: .5; cursor: wait; }
+      #status { font-weight: 600; } #error { color: #b42318; white-space: pre-wrap; }
+      #task-detail { color: #667085; margin-top: 10px; }
+      #transcript { white-space: pre-wrap; line-height: 1.7; max-height: 480px; overflow: auto; }
+      .downloads { display: flex; gap: 10px; margin-top: 18px; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>逐字稿提取器</h1>
+      <p class="muted">上传本地 MP3、M4A、WAV、MP4 或 MOV 文件，生成 Markdown 和 TXT 逐字稿。</p>
+      <section>
+        <label for="file">选择音频或视频</label>
+        <input id="file" type="file" accept=".mp3,.m4a,.wav,.mp4,.mov,audio/*,video/mp4,video/quicktime" />
+        <p id="limit" class="muted"></p>
+        <button id="submit">开始提取</button>
+      </section>
+      <section id="progress" hidden>
+        <div id="status"></div>
+        <div id="task-detail"></div>
+        <div id="error"></div>
+      </section>
+      <section id="result" hidden>
+        <h2 id="filename"></h2>
+        <div id="transcript"></div>
+        <div class="downloads">
+          <a id="markdown" class="button">下载 Markdown</a>
+          <a id="txt" class="button">下载 TXT</a>
+        </div>
+      </section>
+    </main>
+    <script>
+      const fileInput = document.querySelector('#file');
+      const submit = document.querySelector('#submit');
+      const progress = document.querySelector('#progress');
+      const statusNode = document.querySelector('#status');
+      const errorNode = document.querySelector('#error');
+      const detailNode = document.querySelector('#task-detail');
+      const resultNode = document.querySelector('#result');
+      const activeTaskKey = 'transcript-extractor.active-task-id';
+      let config = { max_upload_mb: 500, task_poll_interval_seconds: 2 };
+      let currentTask = null;
+      let elapsedTimer = null;
+
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const formatDuration = seconds => {
+        const value = Math.max(0, Math.floor(seconds || 0));
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor((value % 3600) / 60);
+        const secs = value % 60;
+        return hours > 0
+          ? `${hours}小时${String(minutes).padStart(2, '0')}分${String(secs).padStart(2, '0')}秒`
+          : `${minutes}分${String(secs).padStart(2, '0')}秒`;
+      };
+
+      function renderTaskDetail() {
+        if (!currentTask) { detailNode.textContent = ''; return; }
+        const terminal = ['succeeded', 'failed'].includes(currentTask.status);
+        const elapsed = terminal
+          ? currentTask.elapsed_seconds
+          : (Date.now() - new Date(currentTask.created_at).getTime()) / 1000;
+        const parts = [terminal ? `总耗时：${formatDuration(elapsed)}` : `任务仍在运行 · 已用时：${formatDuration(elapsed)}`];
+        if (currentTask.media_duration_seconds) {
+          parts.push(`媒体时长：${formatDuration(currentTask.media_duration_seconds)}`);
+        }
+        detailNode.textContent = parts.join(' · ');
+      }
+
+      function startElapsedTimer() {
+        if (elapsedTimer) clearInterval(elapsedTimer);
+        elapsedTimer = setInterval(renderTaskDetail, 1000);
+      }
+
+      function stopElapsedTimer() {
+        if (elapsedTimer) clearInterval(elapsedTimer);
+        elapsedTimer = null;
+      }
+
+      async function jsonOrError(response) {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error?.message || '请求失败');
+        return payload;
+      }
+
+      async function poll(taskId) {
+        localStorage.setItem(activeTaskKey, taskId);
+        let consecutiveFailures = 0;
+        startElapsedTimer();
+        while (true) {
+          try {
+            const task = await jsonOrError(await fetch(`/api/v1/tasks/${taskId}`));
+            consecutiveFailures = 0;
+            currentTask = task;
+            statusNode.textContent = task.stage_message;
+            renderTaskDetail();
+            if (task.status === 'failed') {
+              stopElapsedTimer();
+              throw new Error(task.error?.message || '处理失败');
+            }
+            if (task.status === 'succeeded') {
+              stopElapsedTimer();
+              const result = await jsonOrError(await fetch(`/api/v1/tasks/${taskId}/result`));
+              document.querySelector('#filename').textContent = result.original_filename;
+              document.querySelector('#transcript').textContent = result.text;
+              document.querySelector('#markdown').href = task.artifacts.markdown;
+              document.querySelector('#txt').href = task.artifacts.txt;
+              resultNode.hidden = false;
+              return;
+            }
+          } catch (error) {
+            if (currentTask?.status === 'failed') throw error;
+            consecutiveFailures += 1;
+            if (consecutiveFailures >= 5) { stopElapsedTimer(); throw error; }
+            statusNode.textContent = `连接暂时中断，正在重试（${consecutiveFailures}/5）`;
+          }
+          await sleep(config.task_poll_interval_seconds * 1000);
+        }
+      }
+
+      submit.addEventListener('click', async () => {
+        const file = fileInput.files[0];
+        if (!file) { errorNode.textContent = '请先选择文件'; progress.hidden = false; return; }
+        if (file.size > config.max_upload_mb * 1024 * 1024) { errorNode.textContent = `文件不能超过 ${config.max_upload_mb} MB`; progress.hidden = false; return; }
+        submit.disabled = true; resultNode.hidden = true; progress.hidden = false;
+        currentTask = null; detailNode.textContent = '';
+        errorNode.textContent = ''; statusNode.textContent = '正在上传文件';
+        try {
+          const form = new FormData(); form.append('file', file);
+          const created = await jsonOrError(await fetch('/api/v1/tasks', { method: 'POST', body: form }));
+          await poll(created.task_id);
+        } catch (error) {
+          errorNode.textContent = error.message;
+        } finally {
+          submit.disabled = false;
+        }
+      });
+
+      async function initialize() {
+        try {
+          config = await jsonOrError(await fetch('/api/v1/config'));
+          document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
+        } catch (_) {
+          document.querySelector('#limit').textContent = `文件大小上限：${config.max_upload_mb} MB`;
+        }
+        const taskId = localStorage.getItem(activeTaskKey);
+        if (!taskId) return;
+        submit.disabled = true; progress.hidden = false;
+        statusNode.textContent = '正在恢复上次任务';
+        try {
+          await poll(taskId);
+        } catch (error) {
+          errorNode.textContent = error.message;
+        } finally {
+          submit.disabled = false;
+        }
+      }
+
+      initialize();
+    </script>
+  </body>
+</html>

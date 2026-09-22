@@ -1,0 +1,180 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import threading
+from datetime import datetime
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from pydantic import ValidationError
+
+from backend.app.core.errors import AppError, TaskNotFoundError
+from backend.app.schemas.task import (
+    MediaType,
+    TaskArtifacts,
+    TaskError,
+    TaskRecord,
+    TaskStatus,
+)
+
+
+ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
+    TaskStatus.PENDING: {TaskStatus.VALIDATING, TaskStatus.FAILED},
+    TaskStatus.VALIDATING: {
+        TaskStatus.EXTRACTING_AUDIO,
+        TaskStatus.TRANSCRIBING,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.EXTRACTING_AUDIO: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
+    TaskStatus.TRANSCRIBING: {TaskStatus.EXPORTING, TaskStatus.FAILED},
+    TaskStatus.EXPORTING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED},
+    TaskStatus.SUCCEEDED: set(),
+    TaskStatus.FAILED: set(),
+}
+
+
+class TaskService:
+    def __init__(self, tasks_dir: Path) -> None:
+        self.tasks_dir = tasks_dir
+        self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+
+    def new_task_id(self) -> str:
+        return str(uuid4())
+
+    def create(
+        self,
+        *,
+        task_id: str,
+        original_filename: str,
+        stored_filename: str,
+        media_type: MediaType,
+        content_type: str | None,
+        size_bytes: int,
+    ) -> TaskRecord:
+        now = datetime.now().astimezone()
+        record = TaskRecord(
+            task_id=task_id,
+            status=TaskStatus.PENDING,
+            original_filename=original_filename,
+            stored_filename=stored_filename,
+            media_type=media_type,
+            content_type=content_type,
+            size_bytes=size_bytes,
+            created_at=now,
+            updated_at=now,
+            progress_stage=TaskStatus.PENDING,
+        )
+        self._write(record)
+        return record
+
+    def get(self, task_id: str) -> TaskRecord:
+        path = self._path(task_id)
+        if not path.is_file():
+            raise TaskNotFoundError()
+        try:
+            return TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValidationError, json.JSONDecodeError) as exc:
+            raise AppError(
+                "TASK_RECORD_CORRUPTED",
+                "任务记录损坏，无法读取",
+                status_code=500,
+            ) from exc
+
+    def transition(
+        self,
+        task_id: str,
+        new_status: TaskStatus,
+        *,
+        artifacts: TaskArtifacts | None = None,
+    ) -> TaskRecord:
+        with self._lock:
+            record = self.get(task_id)
+            if new_status not in ALLOWED_TRANSITIONS[record.status]:
+                raise AppError(
+                    "INVALID_TASK_TRANSITION",
+                    f"任务不能从 {record.status.value} 进入 {new_status.value}",
+                    status_code=500,
+                )
+            record.status = new_status
+            record.progress_stage = new_status
+            record.updated_at = datetime.now().astimezone()
+            if artifacts is not None:
+                record.artifacts = artifacts
+            self._write(record)
+            return record
+
+    def set_media_duration(self, task_id: str, duration_seconds: float | None) -> TaskRecord:
+        if duration_seconds is None:
+            return self.get(task_id)
+        with self._lock:
+            record = self.get(task_id)
+            record.media_duration_seconds = max(0.0, duration_seconds)
+            record.updated_at = datetime.now().astimezone()
+            self._write(record)
+            return record
+
+    def fail(
+        self,
+        task_id: str,
+        *,
+        code: str,
+        message: str,
+        internal_type: str | None = None,
+    ) -> TaskRecord:
+        with self._lock:
+            record = self.get(task_id)
+            if record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                return record
+            failed_stage = record.status
+            record.status = TaskStatus.FAILED
+            record.progress_stage = TaskStatus.FAILED
+            record.updated_at = datetime.now().astimezone()
+            record.error = TaskError(
+                code=code,
+                message=message,
+                internal_type=internal_type,
+                failed_stage=failed_stage,
+            )
+            self._write(record)
+            return record
+
+    def recover_incomplete(self) -> int:
+        recovered = 0
+        for path in self.tasks_dir.glob("*.json"):
+            try:
+                record = self.get(path.stem)
+            except AppError:
+                continue
+            if record.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                self.fail(
+                    record.task_id,
+                    code="TASK_INTERRUPTED",
+                    message="服务曾中断，请重新上传文件发起任务",
+                    internal_type="ProcessRestart",
+                )
+                recovered += 1
+        return recovered
+
+    def _path(self, task_id: str) -> Path:
+        try:
+            normalized = str(UUID(str(task_id)))
+        except ValueError as exc:
+            raise TaskNotFoundError() from exc
+        return self.tasks_dir / f"{normalized}.json"
+
+    def _write(self, record: TaskRecord) -> None:
+        target = self._path(record.task_id)
+        payload = record.model_dump_json(indent=2)
+        fd, temp_name = tempfile.mkstemp(prefix=f".{record.task_id}.", dir=self.tasks_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, target)
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
