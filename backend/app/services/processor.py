@@ -1,25 +1,43 @@
 from __future__ import annotations
 
 import logging
-from time import perf_counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 
 from backend.app.core.errors import AppError
+from backend.app.core.filenames import sanitize_filename
 from backend.app.schemas.task import (
+    ExtractMethod,
     MediaType,
+    ProcessingMethod,
+    SourceType,
+    SubtitleKind,
     TaskArtifacts,
     TaskStatus,
     TranscriptResult,
 )
+from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
+from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
 
 
 logger = logging.getLogger(__name__)
+
+LOCAL_DURATION_TOO_LONG_TEMPLATE = (
+    "该文件时长约 {hours}，超过当前上限 {limit_minutes} 分钟。建议分段处理后重试"
+)
+
+
+def _format_hours(seconds: float) -> str:
+    hours = seconds / 3600
+    if hours >= 1:
+        return f"{hours:.1f} 小时"
+    return f"{int(seconds // 60)} 分钟"
 
 
 class TaskProcessor:
@@ -30,16 +48,26 @@ class TaskProcessor:
         media_service: MediaService,
         transcription_service: TranscriptionService,
         export_service: ExportService,
+        download_service: DownloadService,
+        subtitle_service: SubtitleService,
         uploads_dir: Path,
         audio_dir: Path,
+        downloads_dir: Path,
+        max_media_seconds: float = 180 * 60,
+        max_media_minutes: int = 180,
         max_workers: int = 1,
     ) -> None:
         self.task_service = task_service
         self.media_service = media_service
         self.transcription_service = transcription_service
         self.export_service = export_service
+        self.download_service = download_service
+        self.subtitle_service = subtitle_service
         self.uploads_dir = uploads_dir
         self.audio_dir = audio_dir
+        self.downloads_dir = downloads_dir
+        self.max_media_seconds = max_media_seconds
+        self.max_media_minutes = max_media_minutes
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="transcript")
 
     def submit(self, task_id: str) -> None:
@@ -48,50 +76,16 @@ class TaskProcessor:
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=False)
 
+    # ------------------------------------------------------------------ 调度
+
     def process(self, task_id: str) -> None:
         task_started = perf_counter()
         try:
-            stage_started = perf_counter()
-            record = self.task_service.transition(task_id, TaskStatus.VALIDATING)
-            source = self.uploads_dir / task_id / record.stored_filename
-            if not source.is_file():
-                raise AppError("UPLOAD_NOT_FOUND", "上传文件不存在")
-            media_info = self.media_service.inspect(source, record.media_type)
-            self.task_service.set_media_duration(task_id, media_info.duration_seconds)
-            self._log_stage(task_id, TaskStatus.VALIDATING, stage_started)
-
-            audio_path = source
-            if record.media_type == MediaType.VIDEO:
-                stage_started = perf_counter()
-                self.task_service.transition(task_id, TaskStatus.EXTRACTING_AUDIO)
-                audio_path = self.audio_dir / task_id / "audio.wav"
-                self.media_service.extract_audio(source, audio_path)
-                self._log_stage(task_id, TaskStatus.EXTRACTING_AUDIO, stage_started)
-
-            stage_started = perf_counter()
-            self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
-            transcription = self.transcription_service.transcribe(audio_path)
-            self._log_stage(task_id, TaskStatus.TRANSCRIBING, stage_started)
-            stage_started = perf_counter()
-            self.task_service.transition(task_id, TaskStatus.EXPORTING)
-            result = TranscriptResult(
-                task_id=task_id,
-                original_filename=record.original_filename,
-                media_type=record.media_type,
-                language=transcription.language,
-                duration_seconds=transcription.duration_seconds or media_info.duration_seconds,
-                text=transcription.text,
-                segments=transcription.segments,
-                generated_at=datetime.now().astimezone(),
-            )
-            markdown_path, txt_path, result_path = self.export_service.export(result)
-            artifacts = TaskArtifacts(
-                markdown=str(markdown_path),
-                txt=str(txt_path),
-                result=str(result_path),
-            )
-            self.task_service.transition(task_id, TaskStatus.SUCCEEDED, artifacts=artifacts)
-            self._log_stage(task_id, TaskStatus.EXPORTING, stage_started)
+            record = self.task_service.get(task_id)
+            if record.source_type == SourceType.PLATFORM_URL:
+                self._process_platform(task_id, record, task_started)
+            else:
+                self._process_local(task_id, record, task_started)
             logger.info(
                 "task_succeeded task_id=%s duration_seconds=%.3f",
                 task_id,
@@ -123,6 +117,166 @@ class TaskProcessor:
                 message="处理失败，请重试。原始文件不会被修改",
                 internal_type=type(exc).__name__,
             )
+
+    # ------------------------------------------------------- 路径一：本地文件
+
+    def _process_local(self, task_id: str, record, task_started: float) -> None:
+        stage_started = perf_counter()
+        record = self.task_service.transition(task_id, TaskStatus.VALIDATING)
+        source = self.uploads_dir / task_id / record.stored_filename
+        if not source.is_file():
+            raise AppError("UPLOAD_NOT_FOUND", "上传文件不存在")
+        media_info = self.media_service.inspect(source, record.media_type)
+        self._ensure_duration_within_limit(media_info.duration_seconds)
+        self.task_service.set_media_duration(task_id, media_info.duration_seconds)
+        self._log_stage(task_id, TaskStatus.VALIDATING, stage_started)
+
+        audio_path = source
+        if record.media_type == MediaType.VIDEO:
+            stage_started = perf_counter()
+            self.task_service.transition(task_id, TaskStatus.EXTRACTING_AUDIO)
+            audio_path = self.audio_dir / task_id / "audio.wav"
+            self.media_service.extract_audio(source, audio_path)
+            self._log_stage(task_id, TaskStatus.EXTRACTING_AUDIO, stage_started)
+
+        self._transcribe_and_export(
+            task_id,
+            audio_path=audio_path,
+            fallback_duration=media_info.duration_seconds,
+            processing_method=ProcessingMethod.SPEECH_TO_TEXT_LOCAL,
+            task_started=task_started,
+        )
+
+    # --------------------------------------------------------- 路径二：链接
+
+    def _process_platform(self, task_id: str, record, task_started: float) -> None:
+        url = record.resolved_url or record.source_url
+        if not url:
+            raise AppError("INVALID_SOURCE_URL", "链接格式不正确，请粘贴完整的 B 站视频链接")
+
+        stage_started = perf_counter()
+        self.task_service.transition(task_id, TaskStatus.CHECKING_SUBTITLE)
+        meta = self.download_service.probe(url)
+        self.task_service.set_media_duration(task_id, meta.duration_seconds)
+        if meta.title:
+            self.task_service.set_original_filename(
+                task_id,
+                sanitize_filename(meta.title, fallback=meta.video_id or task_id),
+            )
+        self._log_stage(task_id, TaskStatus.CHECKING_SUBTITLE, stage_started)
+
+        selection = self.subtitle_service.select(meta.subtitles, meta.automatic_captions)
+        if selection is not None:
+            self._finish_with_subtitle(task_id, selection, meta, task_started)
+            return
+
+        # 无可用字幕：只下载音频轨，然后复用阶段 1 已验证的转写链路。
+        stage_started = perf_counter()
+        self.task_service.transition(task_id, TaskStatus.DOWNLOADING_AUDIO)
+        downloaded = self.download_service.download_audio(
+            url, self.downloads_dir / task_id, task_id
+        )
+        self.task_service.set_downloaded_bytes(task_id, downloaded.size_bytes)
+        wav_path = self.audio_dir / task_id / "audio.wav"
+        self.media_service.extract_audio(downloaded.path, wav_path)
+        self._log_stage(task_id, TaskStatus.DOWNLOADING_AUDIO, stage_started)
+
+        self._transcribe_and_export(
+            task_id,
+            audio_path=wav_path,
+            fallback_duration=meta.duration_seconds,
+            processing_method=ProcessingMethod.SPEECH_TO_TEXT_REMOTE,
+            task_started=task_started,
+        )
+
+    def _finish_with_subtitle(self, task_id: str, selection, meta, task_started: float) -> None:
+        processing_method = (
+            ProcessingMethod.SUBTITLE_BILIBILI_CC
+            if selection.kind == SubtitleKind.CC
+            else ProcessingMethod.SUBTITLE_BILIBILI_AI
+        )
+        record = self.task_service.set_extraction(
+            task_id,
+            processing_method=processing_method,
+            extract_method=ExtractMethod.SUBTITLE,
+            subtitle_kind=selection.kind,
+        )
+        result = TranscriptResult(
+            task_id=task_id,
+            source_type=record.source_type,
+            platform=record.platform,
+            source_url=record.source_url,
+            original_filename=record.original_filename,
+            media_type=record.media_type,
+            processing_method=processing_method,
+            subtitle_kind=selection.kind,
+            language=selection.language,
+            duration_seconds=meta.duration_seconds,
+            text=selection.text,
+            segments=selection.segments,
+            generated_at=datetime.now().astimezone(),
+        )
+        self._export_and_succeed(task_id, result, task_started)
+
+    # --------------------------------------------------------------- 共用尾部
+
+    def _transcribe_and_export(
+        self,
+        task_id: str,
+        *,
+        audio_path: Path,
+        fallback_duration: float | None,
+        processing_method: ProcessingMethod,
+        task_started: float,
+    ) -> None:
+        stage_started = perf_counter()
+        self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
+        transcription = self.transcription_service.transcribe(audio_path)
+        self._log_stage(task_id, TaskStatus.TRANSCRIBING, stage_started)
+
+        record = self.task_service.set_extraction(
+            task_id,
+            processing_method=processing_method,
+            extract_method=ExtractMethod.SPEECH_TO_TEXT,
+        )
+        result = TranscriptResult(
+            task_id=task_id,
+            source_type=record.source_type,
+            platform=record.platform,
+            source_url=record.source_url,
+            original_filename=record.original_filename,
+            media_type=record.media_type,
+            processing_method=processing_method,
+            language=transcription.language,
+            duration_seconds=transcription.duration_seconds or fallback_duration,
+            text=transcription.text,
+            segments=transcription.segments,
+            generated_at=datetime.now().astimezone(),
+        )
+        self._export_and_succeed(task_id, result, task_started)
+
+    def _export_and_succeed(self, task_id: str, result: TranscriptResult, task_started: float) -> None:
+        stage_started = perf_counter()
+        self.task_service.transition(task_id, TaskStatus.EXPORTING)
+        markdown_path, txt_path, result_path = self.export_service.export(result)
+        artifacts = TaskArtifacts(
+            markdown=str(markdown_path),
+            txt=str(txt_path),
+            result=str(result_path),
+        )
+        self.task_service.transition(task_id, TaskStatus.SUCCEEDED, artifacts=artifacts)
+        self._log_stage(task_id, TaskStatus.EXPORTING, stage_started)
+
+    def _ensure_duration_within_limit(self, duration_seconds: float | None) -> None:
+        if duration_seconds is None or duration_seconds <= self.max_media_seconds:
+            return
+        raise AppError(
+            "VIDEO_TOO_LONG",
+            LOCAL_DURATION_TOO_LONG_TEMPLATE.format(
+                hours=_format_hours(duration_seconds),
+                limit_minutes=self.max_media_minutes,
+            ),
+        )
 
     @staticmethod
     def _log_stage(task_id: str, stage: TaskStatus, started_at: float) -> None:

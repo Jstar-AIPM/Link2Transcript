@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import MediaType, TaskStatus, TranscriptSegment
+from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaInfo
 from backend.app.services.processor import TaskProcessor
+from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import Transcription
 
@@ -14,7 +18,9 @@ from backend.app.services.transcription_service import Transcription
 class FakeMediaService:
     def inspect(self, source: Path, expected_type: MediaType) -> MediaInfo:
         assert source.is_file()
-        return MediaInfo(duration_seconds=2.0, has_audio=True, has_video=expected_type == MediaType.VIDEO)
+        return MediaInfo(
+            duration_seconds=2.0, has_audio=True, has_video=expected_type == MediaType.VIDEO
+        )
 
     def extract_audio(self, source: Path, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -23,7 +29,11 @@ class FakeMediaService:
 
 
 class FakeTranscriptionService:
+    def __init__(self) -> None:
+        self.calls: list[Path] = []
+
     def transcribe(self, audio_path: Path) -> Transcription:
+        self.calls.append(audio_path)
         assert audio_path.is_file()
         return Transcription(
             text="测试内容",
@@ -48,7 +58,37 @@ class FailingExportService:
         raise AppError("EXPORT_FAILED", "逐字稿文件生成失败")
 
 
-def create_processor_task(settings, media_type: MediaType):
+class StubLogger:
+    subtitle_login_required = False
+    messages: list[str] = []
+
+
+class StubDownloadService(DownloadService):
+    """离线替身：不访问网络，直接返回预设的元信息与下载产物。"""
+
+    def __init__(self, *, info: dict | None = None, error: AppError | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._info = info or {}
+        self._error = error
+        self.probe_calls: list[str] = []
+        self.download_calls: list[str] = []
+
+    def _extract(self, url, *, download, options=None, listsubtitles=False, noplaylist=False):
+        if self._error is not None:
+            raise self._error
+        return dict(self._info), StubLogger()
+
+    def download_audio(self, url, destination_dir: Path, task_id: str):
+        from backend.app.services.download_service import DownloadedAudio
+
+        self.download_calls.append(url)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        path = destination_dir / "audio.m4a"
+        path.write_bytes(b"audio-bytes")
+        return DownloadedAudio(path=path, size_bytes=path.stat().st_size)
+
+
+def create_local_task(settings, media_type: MediaType):
     settings.ensure_directories()
     tasks = TaskService(settings.tasks_dir)
     task_id = tasks.new_task_id()
@@ -68,16 +108,32 @@ def create_processor_task(settings, media_type: MediaType):
     return tasks, task_id
 
 
-def test_video_processor_runs_complete_chain(settings):
-    tasks, task_id = create_processor_task(settings, MediaType.VIDEO)
-    processor = TaskProcessor(
-        task_service=tasks,
-        media_service=FakeMediaService(),
-        transcription_service=FakeTranscriptionService(),
-        export_service=ExportService(settings.outputs_dir),
+def build_processor(
+    settings,
+    *,
+    media_service=None,
+    transcription_service=None,
+    export_service=None,
+    download_service=None,
+):
+    return TaskProcessor(
+        task_service=TaskService(settings.tasks_dir),
+        media_service=media_service or FakeMediaService(),
+        transcription_service=transcription_service or FakeTranscriptionService(),
+        export_service=export_service or ExportService(settings.outputs_dir),
+        download_service=download_service or StubDownloadService(),
+        subtitle_service=SubtitleService(),
         uploads_dir=settings.uploads_dir,
         audio_dir=settings.audio_dir,
+        downloads_dir=settings.downloads_dir,
+        max_media_seconds=settings.max_media_seconds,
+        max_media_minutes=settings.max_media_minutes,
     )
+
+
+def test_video_processor_runs_complete_chain(settings):
+    tasks, task_id = create_local_task(settings, MediaType.VIDEO)
+    processor = build_processor(settings)
     processor.process(task_id)
     processor.shutdown()
     record = tasks.get(task_id)
@@ -94,14 +150,14 @@ def test_video_processor_runs_complete_chain(settings):
         (
             MediaType.VIDEO,
             FailingExtractionMediaService(),
-            FakeTranscriptionService(),
+            None,
             None,
             "AUDIO_EXTRACTION_FAILED",
             TaskStatus.EXTRACTING_AUDIO,
         ),
         (
             MediaType.AUDIO,
-            FakeMediaService(),
+            None,
             FailingTranscriptionService(),
             None,
             "TRANSCRIPTION_FAILED",
@@ -109,8 +165,8 @@ def test_video_processor_runs_complete_chain(settings):
         ),
         (
             MediaType.AUDIO,
-            FakeMediaService(),
-            FakeTranscriptionService(),
+            None,
+            None,
             FailingExportService(),
             "EXPORT_FAILED",
             TaskStatus.EXPORTING,
@@ -126,14 +182,12 @@ def test_processor_failures_enter_failed_state(
     error_code,
     failed_stage,
 ):
-    tasks, task_id = create_processor_task(settings, media_type)
-    processor = TaskProcessor(
-        task_service=tasks,
+    tasks, task_id = create_local_task(settings, media_type)
+    processor = build_processor(
+        settings,
         media_service=media_service,
         transcription_service=transcription_service,
-        export_service=export_service or ExportService(settings.outputs_dir),
-        uploads_dir=settings.uploads_dir,
-        audio_dir=settings.audio_dir,
+        export_service=export_service,
     )
     processor.process(task_id)
     processor.shutdown()
@@ -142,3 +196,22 @@ def test_processor_failures_enter_failed_state(
     assert record.error is not None
     assert record.error.code == error_code
     assert record.error.failed_stage == failed_stage
+
+
+def test_local_file_exceeding_duration_limit_fails(settings, user_copy_checker):
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    processor = build_processor(settings)
+
+    class LongMediaService(FakeMediaService):
+        def inspect(self, source, expected_type):
+            return MediaInfo(duration_seconds=20_000.0, has_audio=True, has_video=False)
+
+    processor.media_service = LongMediaService()
+    processor.process(task_id)
+    processor.shutdown()
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "VIDEO_TOO_LONG"
+    assert record.error.failed_stage == TaskStatus.VALIDATING
+    user_copy_checker(record.error.message)

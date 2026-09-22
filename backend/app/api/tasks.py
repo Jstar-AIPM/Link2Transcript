@@ -11,10 +11,15 @@ from fastapi.responses import FileResponse
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import (
     STAGE_MESSAGES,
+    CreateTaskFromUrlRequest,
+    MediaType,
+    SourceType,
     TaskCreatedResponse,
+    TaskRecord,
     TaskStatus,
     TaskStatusResponse,
     TranscriptResult,
+    processing_method_label,
 )
 from backend.app.services.media_service import media_type_for_filename
 
@@ -44,6 +49,42 @@ def _artifact_path(request: Request, task_id: str, kind: str) -> tuple[Path, str
     if not path.is_relative_to(outputs_dir) or not path.is_file():
         raise AppError("ARTIFACT_NOT_FOUND", "输出文件不存在", status_code=404)
     return path, record.original_filename
+
+
+def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse:
+    now = datetime.now().astimezone()
+    terminal = record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}
+    elapsed_until = record.updated_at if terminal else now
+    estimated_remaining: float | None = None
+    if record.status == TaskStatus.TRANSCRIBING and record.media_duration_seconds:
+        speed_factor = max(0.1, request.app.state.settings.transcription_speed_factor)
+        in_stage = max(0.0, (now - record.updated_at).total_seconds())
+        estimated_remaining = max(0.0, record.media_duration_seconds / speed_factor - in_stage)
+    return TaskStatusResponse(
+        task_id=record.task_id,
+        status=record.status,
+        stage_message=(record.error.message if record.error else STAGE_MESSAGES[record.status]),
+        source_type=record.source_type,
+        platform=record.platform,
+        source_url=record.source_url,
+        extract_method=record.extract_method,
+        subtitle_kind=record.subtitle_kind,
+        processing_method_label=processing_method_label(record.processing_method),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        elapsed_seconds=max(0.0, (elapsed_until - record.created_at).total_seconds()),
+        media_duration_seconds=record.media_duration_seconds,
+        estimated_remaining_seconds=estimated_remaining,
+        error=record.error,
+        artifacts={
+            "markdown": f"/api/v1/tasks/{record.task_id}/download/markdown"
+            if record.artifacts.markdown
+            else None,
+            "txt": f"/api/v1/tasks/{record.task_id}/download/txt"
+            if record.artifacts.txt
+            else None,
+        },
+    )
 
 
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
@@ -98,28 +139,39 @@ async def create_task(request: Request, file: UploadFile = File(...)) -> TaskCre
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
 
 
+@router.post("/tasks/from-url", response_model=TaskCreatedResponse, status_code=202)
+def create_task_from_url(
+    request: Request, payload: CreateTaskFromUrlRequest
+) -> TaskCreatedResponse:
+    """按链接创建任务。
+
+    URL 的平台白名单校验在**创建任务之前**同步完成：非法链接直接返回 400，
+    不会留下无意义的失败任务记录。
+    """
+    platform_service = request.app.state.platform_service
+    task_service = request.app.state.task_service
+
+    source = platform_service.resolve(payload.url)
+    task_id = task_service.new_task_id()
+    record = task_service.create(
+        task_id=task_id,
+        original_filename=source.video_id,
+        stored_filename="",
+        media_type=MediaType.VIDEO,
+        content_type=None,
+        size_bytes=0,
+        source_type=SourceType.PLATFORM_URL,
+        platform=source.platform,
+        source_url=source.original_url,
+        resolved_url=source.url,
+    )
+    request.app.state.processor.submit(task_id)
+    return TaskCreatedResponse(task_id=record.task_id, status=record.status)
+
+
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 def get_task(request: Request, task_id: UUID) -> TaskStatusResponse:
-    record = request.app.state.task_service.get(str(task_id))
-    elapsed_until = (
-        record.updated_at
-        if record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}
-        else datetime.now().astimezone()
-    )
-    return TaskStatusResponse(
-        task_id=record.task_id,
-        status=record.status,
-        stage_message=(record.error.message if record.error else STAGE_MESSAGES[record.status]),
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-        elapsed_seconds=max(0.0, (elapsed_until - record.created_at).total_seconds()),
-        media_duration_seconds=record.media_duration_seconds,
-        error=record.error,
-        artifacts={
-            "markdown": f"/api/v1/tasks/{task_id}/download/markdown" if record.artifacts.markdown else None,
-            "txt": f"/api/v1/tasks/{task_id}/download/txt" if record.artifacts.txt else None,
-        },
-    )
+    return _status_response(request, request.app.state.task_service.get(str(task_id)))
 
 
 @router.get("/tasks/{task_id}/result", response_model=TranscriptResult)
@@ -148,4 +200,5 @@ def get_public_config(request: Request) -> dict[str, int]:
     return {
         "max_upload_mb": settings.max_upload_mb,
         "task_poll_interval_seconds": settings.task_poll_interval_seconds,
+        "max_media_minutes": settings.max_media_minutes,
     }

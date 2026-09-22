@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import TranscriptSegment
@@ -60,7 +61,17 @@ class TranscriptionService:
                         ) from exc
         return self._model
 
-    def transcribe(self, audio_path: Path) -> Transcription:
+    def transcribe(
+        self,
+        audio_path: Path,
+        on_segment: Callable[[TranscriptSegment], None] | None = None,
+    ) -> Transcription:
+        """转写音频。
+
+        ``on_segment`` 是为止后阶段预留的逐个片段回调口子：faster-whisper 本身就
+        逐个片段产出结果，传入回调即可在解码过程中拿到新片段。阶段 2 不传该参数，
+        行为与阶段 1 完全一致。
+        """
         try:
             model = self._get_model()
             raw_segments, info = model.transcribe(
@@ -69,15 +80,19 @@ class TranscriptionService:
                 vad_filter=True,
                 beam_size=5,
             )
-            segments = [
-                TranscriptSegment(
-                    start=max(0.0, float(segment.start)),
-                    end=max(0.0, float(segment.end)),
-                    text=segment.text.strip(),
+            segments: list[TranscriptSegment] = []
+            for raw_segment in raw_segments:
+                text = raw_segment.text.strip()
+                if not text:
+                    continue
+                segment = TranscriptSegment(
+                    start=max(0.0, float(raw_segment.start)),
+                    end=max(0.0, float(raw_segment.end)),
+                    text=text,
                 )
-                for segment in raw_segments
-                if segment.text.strip()
-            ]
+                segments.append(segment)
+                if on_segment is not None:
+                    on_segment(segment)
         except AppError:
             raise
         except Exception as exc:

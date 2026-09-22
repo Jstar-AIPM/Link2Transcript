@@ -18,7 +18,7 @@ def test_acceptance_page_and_public_config_are_available(settings):
         config = client.get("/api/v1/config")
     assert page.status_code == 200
     assert "逐字稿提取器" in page.text
-    assert config.json() == {
-        "max_upload_mb": 1,
-        "task_poll_interval_seconds": 1,
-    }
+    body = config.json()
+    assert body["max_upload_mb"] == 1
+    assert body["task_poll_interval_seconds"] == 1
+    assert body["max_media_minutes"] == 180

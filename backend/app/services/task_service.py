@@ -12,7 +12,13 @@ from pydantic import ValidationError
 
 from backend.app.core.errors import AppError, TaskNotFoundError
 from backend.app.schemas.task import (
+    CURRENT_SCHEMA_VERSION,
+    ExtractMethod,
     MediaType,
+    Platform,
+    ProcessingMethod,
+    SourceType,
+    SubtitleKind,
     TaskArtifacts,
     TaskError,
     TaskRecord,
@@ -21,12 +27,18 @@ from backend.app.schemas.task import (
 
 
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
-    TaskStatus.PENDING: {TaskStatus.VALIDATING, TaskStatus.FAILED},
+    TaskStatus.PENDING: {TaskStatus.VALIDATING, TaskStatus.CHECKING_SUBTITLE, TaskStatus.FAILED},
     TaskStatus.VALIDATING: {
         TaskStatus.EXTRACTING_AUDIO,
         TaskStatus.TRANSCRIBING,
         TaskStatus.FAILED,
     },
+    TaskStatus.CHECKING_SUBTITLE: {
+        TaskStatus.DOWNLOADING_AUDIO,
+        TaskStatus.EXPORTING,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.DOWNLOADING_AUDIO: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
     TaskStatus.EXTRACTING_AUDIO: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
     TaskStatus.TRANSCRIBING: {TaskStatus.EXPORTING, TaskStatus.FAILED},
     TaskStatus.EXPORTING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED},
@@ -53,11 +65,19 @@ class TaskService:
         media_type: MediaType,
         content_type: str | None,
         size_bytes: int,
+        source_type: SourceType = SourceType.LOCAL_FILE,
+        platform: Platform = Platform.LOCAL,
+        source_url: str | None = None,
+        resolved_url: str | None = None,
     ) -> TaskRecord:
         now = datetime.now().astimezone()
         record = TaskRecord(
             task_id=task_id,
             status=TaskStatus.PENDING,
+            source_type=source_type,
+            platform=platform,
+            source_url=source_url,
+            resolved_url=resolved_url,
             original_filename=original_filename,
             stored_filename=stored_filename,
             media_type=media_type,
@@ -109,12 +129,28 @@ class TaskService:
     def set_media_duration(self, task_id: str, duration_seconds: float | None) -> TaskRecord:
         if duration_seconds is None:
             return self.get(task_id)
-        with self._lock:
-            record = self.get(task_id)
-            record.media_duration_seconds = max(0.0, duration_seconds)
-            record.updated_at = datetime.now().astimezone()
-            self._write(record)
-            return record
+        return self._update(task_id, media_duration_seconds=max(0.0, duration_seconds))
+
+    def set_downloaded_bytes(self, task_id: str, downloaded_bytes: int) -> TaskRecord:
+        return self._update(task_id, downloaded_bytes=max(0, downloaded_bytes))
+
+    def set_original_filename(self, task_id: str, original_filename: str) -> TaskRecord:
+        return self._update(task_id, original_filename=original_filename)
+
+    def set_extraction(
+        self,
+        task_id: str,
+        *,
+        processing_method: ProcessingMethod,
+        extract_method: ExtractMethod | None = None,
+        subtitle_kind: SubtitleKind | None = None,
+    ) -> TaskRecord:
+        return self._update(
+            task_id,
+            processing_method=processing_method,
+            extract_method=extract_method,
+            subtitle_kind=subtitle_kind,
+        )
 
     def fail(
         self,
@@ -158,6 +194,17 @@ class TaskService:
                 recovered += 1
         return recovered
 
+    # ------------------------------------------------------------------ 内部
+
+    def _update(self, task_id: str, **changes) -> TaskRecord:
+        with self._lock:
+            record = self.get(task_id)
+            for field, value in changes.items():
+                setattr(record, field, value)
+            record.updated_at = datetime.now().astimezone()
+            self._write(record)
+            return record
+
     def _path(self, task_id: str) -> Path:
         try:
             normalized = str(UUID(str(task_id)))
@@ -167,6 +214,8 @@ class TaskService:
 
     def _write(self, record: TaskRecord) -> None:
         target = self._path(record.task_id)
+        # 惰性迁移：任何一次写入都把记录升到当前 schema 版本。
+        record.schema_version = CURRENT_SCHEMA_VERSION
         payload = record.model_dump_json(indent=2)
         fd, temp_name = tempfile.mkstemp(prefix=f".{record.task_id}.", dir=self.tasks_dir)
         try:
