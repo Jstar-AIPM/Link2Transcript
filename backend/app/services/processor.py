@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 LOCAL_DURATION_TOO_LONG_TEMPLATE = (
     "该文件时长约 {hours}，超过当前上限 {limit_minutes} 分钟。建议分段处理后重试"
 )
+INCOMPLETE_AUDIO_MESSAGE = (
+    "获取到的音频不完整（仅 {actual}，视频全长 {declared}），无法生成完整逐字稿。"
+    "你可以改用本地文件上传"
+)
+# 实际音频短于声明时长的这个比例时，判定为不完整（防意外截断的通用安全网）。
+MIN_AUDIO_COVERAGE_RATIO = 0.9
 
 
 def _format_hours(seconds: float) -> str:
@@ -38,6 +44,14 @@ def _format_hours(seconds: float) -> str:
     if hours >= 1:
         return f"{hours:.1f} 小时"
     return f"{int(seconds // 60)} 分钟"
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f} 小时"
+    if seconds >= 60:
+        return f"{int(seconds // 60)} 分钟"
+    return f"{int(seconds)} 秒"
 
 
 class TaskProcessor:
@@ -179,6 +193,7 @@ class TaskProcessor:
         self.task_service.set_downloaded_bytes(task_id, downloaded.size_bytes)
         wav_path = self.audio_dir / task_id / "audio.wav"
         self.media_service.extract_audio(downloaded.path, wav_path)
+        self._ensure_audio_complete(wav_path, meta.duration_seconds)
         self._log_stage(task_id, TaskStatus.DOWNLOADING_AUDIO, stage_started)
 
         self._transcribe_and_export(
@@ -277,6 +292,26 @@ class TaskProcessor:
                 limit_minutes=self.max_media_minutes,
             ),
         )
+
+    def _ensure_audio_complete(self, audio_path: Path, declared_seconds: float | None) -> None:
+        """通用安全网：交叉校验实际音频时长与声明时长。
+
+        防止任何形式的“静默截断”（会员预览片段、部分下载、平台异常）
+        被当成完整转写向外呈现。
+        """
+        if not declared_seconds or declared_seconds <= 0:
+            return
+        actual = self.media_service.inspect(audio_path, MediaType.AUDIO).duration_seconds
+        if actual is None:
+            return
+        if actual < declared_seconds * MIN_AUDIO_COVERAGE_RATIO:
+            raise AppError(
+                "DOWNLOAD_INCOMPLETE",
+                INCOMPLETE_AUDIO_MESSAGE.format(
+                    actual=_format_duration(actual),
+                    declared=_format_duration(declared_seconds),
+                ),
+            )
 
     @staticmethod
     def _log_stage(task_id: str, stage: TaskStatus, started_at: float) -> None:

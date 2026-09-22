@@ -112,9 +112,35 @@ def test_error_mapping_for_download_defaults_to_audio_failure():
     assert mapped.code == "AUDIO_DOWNLOAD_FAILED"
 
 
-def test_cookie_is_passed_and_never_logged():
-    service = DownloadService(cookie="SESSDATA=secret-value; bili_jct=abc")
+def test_cookie_is_written_to_a_scoped_cookie_file_and_never_logged(tmp_path: Path):
+    """登录凭据必须走 cookie 文件，而不是 http_headers。
+
+    yt-dlp 会把请求头里的 Cookie 限域到下载 URL 的主机名（.www.bilibili.com），
+    而字幕接口在 api.bilibili.com，导致 Cookie 发不到字幕接口。
+    """
+    service = DownloadService(
+        cookie="SESSDATA=secret-value; bili_jct=abc", cookie_file_dir=tmp_path / "session"
+    )
     options = service._base_options()
-    assert options["http_headers"] == {"Cookie": "SESSDATA=secret-value; bili_jct=abc"}
-    # 不含 Cookie 时不应产生空的请求头配置
-    assert "http_headers" not in DownloadService()._base_options()
+
+    assert "http_headers" not in options
+    cookie_file = Path(options["cookiefile"])
+    assert cookie_file.is_file()
+    content = cookie_file.read_text(encoding="utf-8")
+    assert ".bilibili.com\tTRUE\t/\tTRUE\t0\tSESSDATA\tsecret-value" in content
+    assert ".bilibili.com\tTRUE\t/\tTRUE\t0\tbili_jct\tabc" in content
+    # 凭据文件仅当前用户可读写
+    assert oct(cookie_file.stat().st_mode)[-3:] == "600"
+
+
+def test_without_cookie_no_cookie_file_is_configured():
+    assert "cookiefile" not in DownloadService()._base_options()
+    assert "cookiefile" not in DownloadService(cookie="")._base_options()
+
+
+def test_malformed_cookie_pairs_are_ignored(tmp_path: Path):
+    service = DownloadService(
+        cookie="SESSDATA=keepme; ; broken ;novalue=; =empty",
+        cookie_file_dir=tmp_path / "session",
+    )
+    assert service._cookie_pairs() == [("SESSDATA", "keepme")]

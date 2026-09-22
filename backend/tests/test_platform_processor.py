@@ -95,10 +95,11 @@ def create_platform_task(settings):
     return tasks, task_id
 
 
-def run(settings, download_stub, transcription_service=None, export_service=None):
+def run(settings, download_stub, transcription_service=None, export_service=None, media_service=None):
     tasks, task_id = create_platform_task(settings)
     processor = build_processor(
         settings,
+        media_service=media_service or FakeMediaService(duration_seconds=174.0),
         download_service=download_stub,
         transcription_service=transcription_service,
         export_service=export_service,
@@ -224,3 +225,44 @@ def test_download_error_fails_task_in_downloading_audio(settings, user_copy_chec
     assert record.error.code == "AUDIO_DOWNLOAD_FAILED"
     assert record.error.failed_stage == TaskStatus.DOWNLOADING_AUDIO
     user_copy_checker(record.error.message)
+
+
+def test_vip_preview_only_fails_instead_of_pretending_success(settings, user_copy_checker):
+    """大会员专享视频只能拿到预览片段，必须失败，不能用片段冒充完整逐字稿。"""
+    record = run(
+        settings,
+        PlatformDownloadStub(
+            probe_error=AppError(
+                "VIP_REQUIRED",
+                "该视频为大会员专享内容，当前只能获取预览片段，无法完整转写。你可以改用本地文件上传",
+            )
+        ),
+    )
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "VIP_REQUIRED"
+    user_copy_checker(record.error.message)
+
+
+def test_truncated_audio_fails_instead_of_pretending_success(settings, user_copy_checker):
+    """通用安全网：实际音频远短于声明时长时不能算成功。"""
+    record = run(
+        settings,
+        PlatformDownloadStub(info=make_probe_info(duration=600.0)),
+        media_service=FakeMediaService(duration_seconds=180.0),
+    )
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "DOWNLOAD_INCOMPLETE"
+    assert record.error.failed_stage == TaskStatus.DOWNLOADING_AUDIO
+    assert "3 分钟" in record.error.message and "10 分钟" in record.error.message
+    user_copy_checker(record.error.message)
+
+
+def test_audio_covering_most_of_the_video_is_accepted(settings):
+    record = run(
+        settings,
+        PlatformDownloadStub(info=make_probe_info(duration=180.0)),
+        media_service=FakeMediaService(duration_seconds=178.0),
+    )
+    assert record.status == TaskStatus.SUCCEEDED

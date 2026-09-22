@@ -42,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     download_service = DownloadService(
         cookie=app_settings.bilibili_cookie,
+        cookie_file_dir=app_settings.session_dir,
         proxy=app_settings.platform_proxy,
         max_media_seconds=app_settings.max_media_seconds,
         max_media_minutes=app_settings.max_media_minutes,

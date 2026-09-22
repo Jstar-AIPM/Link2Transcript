@@ -16,10 +16,15 @@ from backend.app.services.transcription_service import Transcription
 
 
 class FakeMediaService:
+    def __init__(self, duration_seconds: float | None = 2.0) -> None:
+        self.duration_seconds = duration_seconds
+
     def inspect(self, source: Path, expected_type: MediaType) -> MediaInfo:
         assert source.is_file()
         return MediaInfo(
-            duration_seconds=2.0, has_audio=True, has_video=expected_type == MediaType.VIDEO
+            duration_seconds=self.duration_seconds,
+            has_audio=True,
+            has_video=expected_type == MediaType.VIDEO,
         )
 
     def extract_audio(self, source: Path, destination: Path) -> Path:
@@ -205,7 +210,6 @@ def test_local_file_exceeding_duration_limit_fails(settings, user_copy_checker):
     class LongMediaService(FakeMediaService):
         def inspect(self, source, expected_type):
             return MediaInfo(duration_seconds=20_000.0, has_audio=True, has_video=False)
-
     processor.media_service = LongMediaService()
     processor.process(task_id)
     processor.shutdown()

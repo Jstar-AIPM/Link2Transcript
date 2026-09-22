@@ -77,6 +77,11 @@ class Settings:
     def downloads_dir(self) -> Path:
         return self.data_dir / "downloads"
 
+    @property
+    def session_dir(self) -> Path:
+        """登录凭据等敏感运行态文件的存放目录（不进入版本控制）。"""
+        return self.data_dir / ".session"
+
     def ensure_directories(self) -> None:
         for directory in (
             self.uploads_dir,
@@ -84,6 +89,7 @@ class Settings:
             self.outputs_dir,
             self.tasks_dir,
             self.downloads_dir,
+            self.session_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
