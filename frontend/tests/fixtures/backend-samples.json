@@ -5,7 +5,7 @@
     "max_media_minutes": 360
   },
   "status": {
-    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "task_id": "00000000-0000-4000-8000-000000000001",
     "status": "succeeded",
     "stage_message": "逐字稿已生成",
     "source_type": "local_file",
@@ -14,80 +14,81 @@
     "extract_method": "speech_to_text",
     "subtitle_kind": null,
     "processing_method_label": "语音转写",
-    "created_at": "2026-09-23T13:07:24.544561+08:00",
-    "updated_at": "2026-09-23T13:32:14.931550+08:00",
-    "elapsed_seconds": 1490.386989,
-    "media_duration_seconds": 3773.54475,
+    "created_at": "2026-03-01T10:00:00+08:00",
+    "updated_at": "2026-03-01T10:25:00+08:00",
+    "elapsed_seconds": 1500.0,
+    "media_duration_seconds": 3773.5,
     "estimated_remaining_seconds": null,
-    "segment_count": 2007,
-    "transcribed_seconds": 3771.13,
+    "segment_count": 3,
+    "transcribed_seconds": 9.8,
     "progress_percent": 100.0,
     "partial_result_available": false,
     "cancellable": false,
     "error": null,
     "artifacts": {
-      "markdown": "/api/v1/tasks/0c21db42-508f-4bf4-815e-f998942c2c21/download/markdown",
-      "txt": "/api/v1/tasks/0c21db42-508f-4bf4-815e-f998942c2c21/download/txt"
-    }
+      "markdown": "/api/v1/tasks/00000000-0000-4000-8000-000000000001/download/markdown",
+      "txt": "/api/v1/tasks/00000000-0000-4000-8000-000000000001/download/txt"
+    },
+    "original_filename": "sample-audio.m4a"
   },
   "segments": {
-    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "task_id": "00000000-0000-4000-8000-000000000001",
     "status": "succeeded",
     "partial": false,
-    "total": 2007,
+    "total": 3,
     "next_after": 3,
-    "has_more": true,
+    "has_more": false,
     "segments": [
       {
         "index": 0,
         "start": 0.0,
         "end": 2.24,
-        "text": "貝多芬每天清晨的第一件事"
+        "text": "这是一段用于接口契约测试的示例文本"
       },
       {
         "index": 1,
         "start": 2.24,
-        "end": 5.36,
-        "text": "是強迫症一樣在捉錢數豆子"
+        "end": 6.4,
+        "text": "它只用来校验字段结构，不包含任何真实内容"
       },
       {
         "index": 2,
-        "start": 5.36,
-        "end": 9.48,
-        "text": "少一顆或多一顆都要憤怒地倒掉重來"
+        "start": 6.4,
+        "end": 9.8,
+        "text": "示例音频由测试代码生成"
       }
     ]
   },
   "result": {
     "schema_version": 2,
-    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "task_id": "00000000-0000-4000-8000-000000000001",
     "source_type": "local_file",
     "platform": "local",
     "source_url": null,
-    "original_filename": "case1-1hour.wav",
+    "original_filename": "sample-audio.m4a",
     "media_type": "audio",
     "processing_method": "speech_to_text_local",
     "subtitle_kind": null,
     "language": "zh",
-    "duration_seconds": 3773.54475,
-    "text": "貝多芬每天清晨的第一件事\n是強迫症一樣在捉錢數豆子\n少一顆或多一顆都要憤怒地倒掉重來\n他的每一杯咖啡必須由不多不少正好60顆豆子組成\n只為了精準捕獲\n那個讓他保持抗憤與清醒的微觀分子\n但在大自然原本的劇本裡\n這根本不是什麼提神銀品\n而是一套兇猛的武器\n故事要從東非的高地與林說起\n在殘酷的自然界裡\n咖啡樹為了不被吃絕\n在嫩葉和種子裡合成了高濃度的咖啡因\n對昆蟲來說\n咖啡因是致命的神經毒素\n一旦肯了\n",
+    "duration_seconds": 9.8,
+    "text": "这是一段用于接口契约测试的示例文本\n它只用来校验字段结构，不包含任何真实内容\n示例音频由测试代码生成",
     "segments": [
       {
         "start": 0.0,
         "end": 2.24,
-        "text": "貝多芬每天清晨的第一件事"
+        "text": "这是一段用于接口契约测试的示例文本"
       },
       {
         "start": 2.24,
-        "end": 5.36,
-        "text": "是強迫症一樣在捉錢數豆子"
+        "end": 6.4,
+        "text": "它只用来校验字段结构，不包含任何真实内容"
       },
       {
-        "start": 5.36,
-        "end": 9.48,
-        "text": "少一顆或多一顆都要憤怒地倒掉重來"
+        "start": 6.4,
+        "end": 9.8,
+        "text": "示例音频由测试代码生成"
       }
     ],
-    "generated_at": "2026-09-23T13:32:14.919190+08:00"
+    "generated_at": "2026-03-01T10:25:00+08:00"
   }
 }

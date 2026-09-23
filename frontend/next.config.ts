@@ -12,21 +12,26 @@ import type { NextConfig } from "next";
  */
 const backendOrigin = process.env.BACKEND_ORIGIN ?? "http://127.0.0.1:8000";
 
+/**
+ * 开发模式下允许访问开发资源的来源。
+ *
+ * Next 16 默认拦截「跨来源」的开发资源请求（HMR、开发态 chunk）。
+ * 用 `127.0.0.1` 或局域网 IP 打开时会被判定为跨来源，页面会加载不完整。
+ *
+ * 默认放行本机地址；用手机/其它设备调试时，把自己的局域网地址加进
+ * 环境变量 `ALLOWED_DEV_ORIGINS`（逗号分隔）即可，不需要改代码：
+ *   ALLOWED_DEV_ORIGINS=192.168.1.23,my-mac.local npm run dev
+ */
+function allowedDevOrigins(): string[] {
+  const extra = (process.env.ALLOWED_DEV_ORIGINS ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return ["127.0.0.1", "localhost", "*.local", ...extra];
+}
+
 const nextConfig: NextConfig = {
-  /**
-   * 开发模式下允许访问开发资源的来源。
-   *
-   * Next 16 默认拦截「跨来源」的开发资源请求（HMR、开发态 chunk）。
-   * 用 `127.0.0.1` 或局域网 IP 打开时会被判定为跨来源，页面会加载不完整 ——
-   * 真实踩过（日志：Blocked cross-origin request to Next.js dev resource /_next/hmr）。
-   * 这里把本机常用地址与局域网地址都放行，方便手机连同一 Wi-Fi 测试。
-   */
-  allowedDevOrigins: [
-    "127.0.0.1",
-    "localhost",
-    "192.168.0.116",
-    "*.local",
-  ],
+  allowedDevOrigins: allowedDevOrigins(),
 
   async rewrites() {
     return [
