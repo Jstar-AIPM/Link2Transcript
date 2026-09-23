@@ -270,6 +270,50 @@ describe("任务详情：失败与取消", () => {
   });
 });
 
+describe("任务详情：任务不存在、复制全文与最近任务", () => {
+  it("任务不存在时给明确说明与返回入口，而不是一直重试", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (String(url).includes("/api/v1/config")) return Promise.resolve(jsonResponse(CONFIG));
+        return Promise.resolve(
+          jsonResponse({ error: { code: "TASK_NOT_FOUND", message: "未找到该任务" } }, false, 404),
+        );
+      }),
+    );
+
+    render(<TaskDetail taskId="2b1fbd0a-6b5f-4a53-9a3f-1b0a0d1c7f11" />);
+
+    await screen.findByText("没有找到这个任务");
+    expect(screen.getByRole("link", { name: "返回首页，发起新任务" })).toBeDefined();
+    expect(document.body.textContent).toContain("2b1fbd0a-6b5f-4a53-9a3f-1b0a0d1c7f11");
+  });
+
+  it("有内容时可以复制全文，剪贴板不可用时给中文提示", async () => {
+    stubFetch([
+      {
+        status: taskWith({ status: "transcribing", cancellable: true, segment_count: 2 }),
+        segments: segmentsPage(
+          [
+            { index: 0, start: 0, end: 5, text: "第一段" },
+            { index: 1, start: 5, end: 9, text: "第二段" },
+          ],
+          2,
+        ),
+      },
+    ]);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+
+    render(<TaskDetail taskId={TASK_ID} />);
+    await screen.findByText("第二段");
+
+    fireEvent.click(screen.getByRole("button", { name: "复制全文" }));
+    await screen.findByText("已复制");
+    expect(writeText).toHaveBeenCalledWith("第一段\n第二段");
+  });
+});
+
 describe("任务详情：自动跟随", () => {
   it("用户上滚时暂停跟随并出现「回到最新」，点击后恢复", async () => {
     stubFetch([

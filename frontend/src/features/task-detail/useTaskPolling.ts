@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError, api } from "@/lib/api/client";
 import { isTerminal, type Segment, type TaskStatusResponse } from "@/lib/api/schemas";
+import { rememberTask } from "@/lib/recent-task";
 
 const MAX_POLL_FAILURES = 5;
 /** 页面切到后台后的轮询间隔（秒） */
@@ -29,6 +30,8 @@ export type TaskPollingState = {
   error: string | null;
   loading: boolean;
   cancelling: boolean;
+  /** 任务不存在（链接抄错 / 记录被清理）：继续轮询没有意义 */
+  missing: boolean;
 };
 
 export function useTaskPolling(taskId: string, intervalSeconds: number) {
@@ -39,6 +42,7 @@ export function useTaskPolling(taskId: string, intervalSeconds: number) {
     error: null,
     loading: true,
     cancelling: false,
+    missing: false,
   });
   const afterRef = useRef(0);
   const stopRef = useRef(false);
@@ -66,6 +70,7 @@ export function useTaskPolling(taskId: string, intervalSeconds: number) {
     // 正常情况下后端不会重复返回，但界面是最后一道防线，不能让重复内容渲染两次。
     const fresh = page.segments.filter((segment) => segment.index >= afterRef.current);
     if (fresh.length) afterRef.current = Math.max(afterRef.current, page.next_after);
+    rememberTask(taskId);
     setState((previous) => ({
       status: task,
       segments: fresh.length ? [...previous.segments, ...fresh] : previous.segments,
@@ -73,6 +78,7 @@ export function useTaskPolling(taskId: string, intervalSeconds: number) {
       error: null,
       loading: false,
       cancelling: false,
+      missing: false,
     }));
     failuresRef.current = 0;
     return task;
@@ -82,6 +88,19 @@ export function useTaskPolling(taskId: string, intervalSeconds: number) {
     try {
       return await load();
     } catch (error) {
+      // 任务不存在：链接抄错或记录已被清理。继续轮询无意义，直接告知用户。
+      if (error instanceof ApiError && error.code === "TASK_NOT_FOUND") {
+        failuresRef.current = MAX_POLL_FAILURES;
+        setState((previous) => ({
+          ...previous,
+          loading: false,
+          cancelling: false,
+          missing: true,
+          notice: null,
+          error: null,
+        }));
+        return null;
+      }
       const message = error instanceof ApiError ? error.message : "服务暂时不可用，请稍后重试";
       failuresRef.current += 1;
       const giveUp = failuresRef.current >= MAX_POLL_FAILURES;
@@ -141,6 +160,7 @@ export function useTaskPolling(taskId: string, intervalSeconds: number) {
         error: null,
         loading: false,
         cancelling: false,
+        missing: false,
       }));
     } catch (error) {
       const message = error instanceof ApiError ? error.message : "取消失败，请稍后重试";

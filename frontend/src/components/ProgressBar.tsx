@@ -5,10 +5,13 @@ export function ProgressBar({
   percent,
   label,
   tone = "accent",
+  valueText,
 }: {
   percent: number;
   label?: string;
   tone?: "accent" | "muted";
+  /** 给读屏软件的兜底描述（如“已转写 42分18秒 / 共 1小时”） */
+  valueText?: string;
 }) {
   const clamped = Math.max(0, Math.min(100, percent));
   const fill = tone === "accent" ? "bg-accent" : "bg-hairline-strong";
@@ -18,6 +21,7 @@ export function ProgressBar({
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(clamped)}
+      aria-valuetext={valueText}
       aria-label={label ?? "进度"}
       className="h-1.5 w-full overflow-hidden rounded-chip bg-sunken"
     >

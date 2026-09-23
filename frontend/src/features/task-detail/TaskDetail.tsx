@@ -28,9 +28,50 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       ? configState.config.task_poll_interval_seconds
       : FALLBACK_INTERVAL_SECONDS;
 
-  const { status, segments, notice, error, loading, cancelling, refresh, cancel } =
+  const { status, segments, notice, error, loading, cancelling, missing, refresh, cancel } =
     useTaskPolling(taskId, interval);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
+
+  /** 复制全文：只在用户点击时才读剪贴板 API（无权限/不支持时给中文提示） */
+  const copyTranscript = async () => {
+    const text = segments.map((segment) => segment.text).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyState("ok");
+    } catch {
+      setCopyState("fail");
+    }
+    window.setTimeout(() => setCopyState("idle"), 2500);
+  };
+
+  if (missing) {
+    return (
+      <section className="rounded-card border border-hairline bg-raised p-4 shadow-subtle sm:p-5">
+        <h2 className="text-[20px] font-medium text-ink">没有找到这个任务</h2>
+        <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">
+          可能是地址抄错了，或者这个任务的记录已经被清理。
+          任务记录默认会一直保留，你可以从首页重新发起任务。
+        </p>
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Link
+            href="/"
+            className="rounded-button bg-ink-fill px-4 py-2.5 text-[15px] text-ink-inverse transition-opacity hover:opacity-90"
+          >
+            返回首页，发起新任务
+          </Link>
+          <button
+            type="button"
+            onClick={refresh}
+            className="rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-sunken"
+          >
+            重新检查
+          </button>
+        </div>
+        <p className="mt-4 text-[13px] text-ink-muted">任务编号：{taskId}</p>
+      </section>
+    );
+  }
 
   const running = status !== null && !isTerminal(status.status);
   const hasContent = segments.length > 0;
@@ -49,14 +90,24 @@ export function TaskDetail({ taskId }: { taskId: string }) {
   return (
     <section className="rounded-card border border-hairline bg-raised p-4 shadow-subtle sm:p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <h2 className="text-[20px] font-medium leading-snug text-ink">{heading}</h2>
+        <h2 aria-live="polite" className="text-[20px] font-medium leading-snug text-ink">
+          {heading}
+        </h2>
         {status ? <StatusBadge status={status.status} /> : null}
       </div>
 
       {status ? (
         <>
           <div className="mt-4">
-            <ProgressBar percent={status.progress_percent} label="转写进度" />
+            <ProgressBar
+              percent={status.progress_percent}
+              label="转写进度"
+              valueText={
+                status.media_duration_seconds
+                  ? `已转写 ${formatDuration(status.transcribed_seconds)}，共 ${formatDuration(status.media_duration_seconds)}`
+                  : undefined
+              }
+            />
             <p className="tnum mt-2 text-[13px] leading-relaxed text-ink-soft">
               {status.media_duration_seconds
                 ? `已转写 ${formatDuration(status.transcribed_seconds)} / 共 ${formatDuration(status.media_duration_seconds)}`
@@ -151,6 +202,17 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         segments={segments}
         emptyHint={
           running ? "正在等待第一段内容…（首次转写需要先加载语音识别模型）" : "没有可展示的内容。"
+        }
+        headerActions={
+          hasContent ? (
+            <button
+              type="button"
+              onClick={() => void copyTranscript()}
+              className="rounded-button border border-hairline-strong px-3 py-2 text-[13px] text-ink transition-colors hover:bg-sunken"
+            >
+              {copyState === "ok" ? "已复制" : copyState === "fail" ? "复制失败，请手动选择" : "复制全文"}
+            </button>
+          ) : null
         }
       />
 

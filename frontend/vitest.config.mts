@@ -11,6 +11,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    // jsdom 需要一个具体来源才会启用 localStorage（否则是 opaque origin）
+    environmentOptions: { jsdom: { url: "http://localhost:3100/" } },
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
     globals: true,
   },

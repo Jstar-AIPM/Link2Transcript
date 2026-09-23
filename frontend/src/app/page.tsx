@@ -1,3 +1,4 @@
+import { RecentTaskLink } from "@/components/RecentTaskLink";
 import { CreateTaskPanel } from "@/features/create-task/CreateTaskPanel";
 
 export default function HomePage() {
@@ -15,6 +16,10 @@ export default function HomePage() {
 
       <div className="mt-6">
         <CreateTaskPanel />
+      </div>
+
+      <div className="mt-3">
+        <RecentTaskLink />
       </div>
 
       <footer className="mt-8 border-t border-hairline pt-4 text-[13px] leading-relaxed text-ink-muted">

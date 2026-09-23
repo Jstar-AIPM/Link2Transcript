@@ -21,9 +21,12 @@ const FOLLOW_THRESHOLD_PX = 24;
 export function TranscriptViewer({
   segments,
   emptyHint,
+  headerActions,
 }: {
   segments: Segment[];
   emptyHint: string;
+  /** 右侧操作区（如「复制全文」），由调用方决定什么时候显示 */
+  headerActions?: React.ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
@@ -54,17 +57,20 @@ export function TranscriptViewer({
 
   return (
     <section className="mt-5">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-[15px] font-medium text-ink">逐字稿</h3>
-        {!following ? (
-          <button
-            type="button"
-            onClick={backToLatest}
-            className="rounded-button border border-hairline-strong px-3 py-1.5 text-[13px] text-ink transition-colors hover:bg-sunken"
-          >
-            回到最新
-          </button>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {headerActions}
+          {!following ? (
+            <button
+              type="button"
+              onClick={backToLatest}
+              className="rounded-button border border-hairline-strong px-3 py-2 text-[13px] text-ink transition-colors hover:bg-sunken"
+            >
+              回到最新
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div
