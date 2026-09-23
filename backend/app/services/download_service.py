@@ -6,15 +6,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from backend.app.core.errors import AppError
+from backend.app.core.messages import video_too_long_message
 
 
 logger = logging.getLogger(__name__)
 
 PLATFORM_EXTRACTORS = {"BiliBili", "BiliBiliBangumi", "BiliBiliSearch"}
 
-VIDEO_TOO_LONG_TEMPLATE = (
-    "该视频时长约 {hours}，超过当前上限 {limit_minutes} 分钟。建议分段处理，或改用本地文件上传"
-)
 MULTI_PART_MESSAGE = "当前只支持单个视频，请粘贴某一个分集（分 P）的链接"
 # 大会员专享视频只能拿到预览片段。yt-dlp 对此只发警告不报错，
 # 若不拦截，会用几分钟的预览片段冒充完整视频，属于“假装成功”。
@@ -74,13 +72,6 @@ class _YdlLogger:
         if any(token in lowered for token in PREVIEW_WARNING_TOKENS):
             self.preview_only = True
         logger.log(level, "yt_dlp: %s", text)
-
-
-def _format_hours(seconds: float) -> str:
-    hours = seconds / 3600
-    if hours >= 1:
-        return f"{hours:.1f} 小时"
-    return f"{int(seconds // 60)} 分钟"
 
 
 class DownloadService:
@@ -143,10 +134,7 @@ class DownloadService:
         if duration_seconds is not None and duration_seconds > self.max_media_seconds:
             raise AppError(
                 "VIDEO_TOO_LONG",
-                VIDEO_TOO_LONG_TEMPLATE.format(
-                    hours=_format_hours(duration_seconds),
-                    limit_minutes=self.max_media_minutes,
-                ),
+                video_too_long_message(duration_seconds, self.max_media_minutes),
             )
 
         subtitles = info.get("subtitles") or {}

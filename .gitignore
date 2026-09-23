@@ -7,8 +7,11 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-data/uploads/
-data/audio/
-data/outputs/
-data/tasks/
+
+# 运行数据（含任务记录、中间音频、逐字稿产物、下载缓存）
+# 特别注意：data/.session/ 里是登录凭据（B 站 Cookie），绝不能进版本控制。
+# 这里整目录忽略，避免以后新增子目录（如 downloads / .session）又被漏掉。
+data/
+data-*/
+
 models/

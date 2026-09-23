@@ -42,6 +42,51 @@ def test_transcribe_without_callback_still_returns_full_result():
     assert result.text == "第一句\n第二句"
 
 
+def _install_fake_model(service: TranscriptionService, model, *, mark_loaded: bool = True):
+    """绕过真实模型加载（含磁盘缓存），同时能模拟“冷启动 / 已加载”两种情况。"""
+
+    def load():
+        if mark_loaded:
+            service._model = model
+        return model
+
+    service._get_model = load
+
+
+def test_stage_callback_reports_model_loading_then_transcribing():
+    """首字延迟（模型加载、开始解码）必须能被上层感知，否则页面看起来像卡死。"""
+    service = TranscriptionService("tiny", "cpu", "int8")
+    _install_fake_model(service, _FakeModel())
+
+    stages: list[str] = []
+    service.transcribe(Path("unused.wav"), on_stage=stages.append)
+    assert stages == ["loading_model", "transcribing"]
+
+    # 同一进程内的第二个任务：模型已加载，不再重复报“正在加载模型”
+    stages.clear()
+    service.transcribe(Path("unused.wav"), on_stage=stages.append)
+    assert stages == ["transcribing"]
+
+
+def test_start_offset_shifts_segment_timestamps():
+    """断点续写：续写音频的片段时间戳要能拼回全局时间轴。"""
+    service = TranscriptionService("tiny", "cpu", "int8")
+    _install_fake_model(service, _FakeModel())
+
+    seen = []
+    result = service.transcribe(Path("unused.wav"), on_segment=seen.append, start_offset=100.0)
+
+    assert [(s.start, s.end) for s in result.segments] == [(100.0, 101.0), (102.0, 103.0)]
+    assert [(s.start, s.end) for s in seen] == [(100.0, 101.0), (102.0, 103.0)]
+
+
+def test_negative_start_offset_is_clamped():
+    service = TranscriptionService("tiny", "cpu", "int8")
+    _install_fake_model(service, _FakeModel())
+    result = service.transcribe(Path("unused.wav"), start_offset=-5.0)
+    assert result.segments[0].start == 0.0
+
+
 # ---------------------------------------------------------------------------
 # 没有人声的内容：必须明确报错，不能静默产出垃圾文本
 # ---------------------------------------------------------------------------
@@ -99,3 +144,23 @@ def test_empty_text_raises_empty_transcript():
     with _pytest.raises(_AppError) as exc_info:
         service.transcribe(Path("unused.wav"))
     assert exc_info.value.code == "EMPTY_TRANSCRIPT"
+
+
+def test_resume_mode_tolerates_silent_or_empty_tail():
+    """续写片段的尾部可能全是静音："没有新片段"不是失败（阶段 3B）。"""
+    info = _NS(duration=10.0, duration_after_vad=0.0, language="zh")
+
+    class _Model:
+        def transcribe(self, path, **kwargs):
+            return iter([]), info
+
+    service = TranscriptionService("tiny", "cpu", "int8")
+    service._model = _Model()
+
+    result = service.transcribe(Path("unused.wav"), allow_empty_result=True)
+    assert result.segments == [] and result.text == ""
+
+    # 同样的输入，非续写模式仍按严格行为报错
+    with _pytest.raises(_AppError) as exc_info:
+        service.transcribe(Path("unused.wav"))
+    assert exc_info.value.code == "SILENT_AUDIO"

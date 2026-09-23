@@ -27,6 +27,13 @@ def _optional_int(name: str) -> int | None:
         return None
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str
@@ -37,13 +44,18 @@ class Settings:
     whisper_compute_type: str
     task_poll_interval_seconds: int
     task_max_workers: int
-    max_media_minutes: int = 0
+    max_media_minutes: int = 360
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
     platform_rate_limit_kbps: int | None = None
     platform_proxy: str = ""
     transcription_speed_factor: float = 4.0
+    # 阶段 3：转写过程实时反馈
+    progress_persist_interval_seconds: float = 1.0
+    resume_on_startup: bool = True
+    resume_overlap_seconds: float = 2.0
+    max_segments_per_task: int = 200_000
 
     @property
     def max_upload_bytes(self) -> int:
@@ -55,7 +67,10 @@ class Settings:
 
     @property
     def max_media_seconds(self) -> float:
-        """内容时长上限。``max_media_minutes`` 为 0 表示**不限制时长**（默认）。"""
+        """内容时长上限。``max_media_minutes`` 为 0 表示不限制时长。
+
+        默认 360 分钟（6 小时）：足够覆盖 4–5 小时的播客，同时挡住夸张输入。
+        """
         if self.max_media_minutes <= 0:
             return float("inf")
         return float(self.max_media_minutes * 60)
@@ -108,7 +123,7 @@ def get_settings() -> Settings:
         whisper_compute_type=os.getenv("WHISPER_COMPUTE_TYPE", "int8"),
         task_poll_interval_seconds=int(os.getenv("TASK_POLL_INTERVAL_SECONDS", "2")),
         task_max_workers=max(1, int(os.getenv("TASK_MAX_WORKERS", "1"))),
-        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "0")),
+        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),
         platform_download_timeout_seconds=int(
@@ -117,4 +132,10 @@ def get_settings() -> Settings:
         platform_rate_limit_kbps=_optional_int("PLATFORM_RATE_LIMIT_KBPS"),
         platform_proxy=os.getenv("PLATFORM_PROXY", "").strip(),
         transcription_speed_factor=float(os.getenv("TRANSCRIPTION_SPEED_FACTOR", "4")),
+        progress_persist_interval_seconds=float(
+            os.getenv("PROGRESS_PERSIST_INTERVAL_SECONDS", "1")
+        ),
+        resume_on_startup=_bool("RESUME_ON_STARTUP", True),
+        resume_overlap_seconds=float(os.getenv("RESUME_OVERLAP_SECONDS", "2")),
+        max_segments_per_task=int(os.getenv("MAX_SEGMENTS_PER_TASK", "200000")),
     )

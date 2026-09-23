@@ -1,27 +1,35 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import (
     STAGE_MESSAGES,
+    TERMINAL_STATUSES,
     CreateTaskFromUrlRequest,
     MediaType,
+    SegmentItem,
     SourceType,
     TaskCreatedResponse,
     TaskRecord,
+    TaskSegmentsResponse,
     TaskStatus,
     TaskStatusResponse,
     TranscriptResult,
     processing_method_label,
 )
 from backend.app.services.media_service import media_type_for_filename
+from backend.app.services.segment_store import StoredSegment
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
@@ -51,19 +59,39 @@ def _artifact_path(request: Request, task_id: str, kind: str) -> tuple[Path, str
     return path, record.original_filename
 
 
+def _progress_percent(record: TaskRecord) -> float:
+    """进度百分比：已转写时长 / 总时长。
+
+    未完成时封顶 99，不给出“已完成”的错觉；成功后固定 100，
+    不依赖片段是否覆盖到音频末尾的静音段。
+    """
+    if record.status == TaskStatus.SUCCEEDED:
+        return 100.0
+    duration = record.media_duration_seconds
+    transcribed = record.transcribed_seconds
+    if not duration or duration <= 0 or not transcribed:
+        return 0.0
+    return round(min(99.0, transcribed / duration * 100), 1)
+
+
 def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse:
     now = datetime.now().astimezone()
-    terminal = record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}
+    terminal = record.status in TERMINAL_STATUSES
     elapsed_until = record.updated_at if terminal else now
     estimated_remaining: float | None = None
     if record.status == TaskStatus.TRANSCRIBING and record.media_duration_seconds:
         speed_factor = max(0.1, request.app.state.settings.transcription_speed_factor)
         in_stage = max(0.0, (now - record.updated_at).total_seconds())
         estimated_remaining = max(0.0, record.media_duration_seconds / speed_factor - in_stage)
+    if record.error is not None:
+        stage_message = record.error.message
+    else:
+        # 细粒度文案（如“正在加载语音识别模型”）优先，缺省时回落粗粒度阶段文案。
+        stage_message = record.stage_message or STAGE_MESSAGES[record.status]
     return TaskStatusResponse(
         task_id=record.task_id,
         status=record.status,
-        stage_message=(record.error.message if record.error else STAGE_MESSAGES[record.status]),
+        stage_message=stage_message,
         source_type=record.source_type,
         platform=record.platform,
         source_url=record.source_url,
@@ -75,6 +103,11 @@ def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse
         elapsed_seconds=max(0.0, (elapsed_until - record.created_at).total_seconds()),
         media_duration_seconds=record.media_duration_seconds,
         estimated_remaining_seconds=estimated_remaining,
+        segment_count=record.segment_count,
+        transcribed_seconds=record.transcribed_seconds,
+        progress_percent=_progress_percent(record),
+        partial_result_available=record.partial_result_available,
+        cancellable=not terminal,
         error=record.error,
         artifacts={
             "markdown": f"/api/v1/tasks/{record.task_id}/download/markdown"
@@ -172,6 +205,70 @@ def create_task_from_url(
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 def get_task(request: Request, task_id: UUID) -> TaskStatusResponse:
     return _status_response(request, request.app.state.task_service.get(str(task_id)))
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskStatusResponse)
+def cancel_task(request: Request, task_id: UUID) -> TaskStatusResponse:
+    """取消任务（阶段 3D）。
+
+    立即落到终态 ``cancelled``：工作线程会在下一个检查点停止，
+    已落盘的部分结果保留，但不生成可下载的成功产物。
+    """
+    task_service = request.app.state.task_service
+    record = task_service.request_cancel(str(task_id))
+    # 取消响应里的进度要和磁盘对齐：用户下一秒就能读到已生成的内容。
+    # （进度写回是按秒节流的，而工作线程要到下一个检查点才停止）
+    request.app.state.processor.sync_partial_progress(record.task_id)
+    record = task_service.get(record.task_id)
+    logger.info("task_cancelled task_id=%s segment_count=%s", record.task_id, record.segment_count)
+    return _status_response(request, record)
+
+
+@router.get("/tasks/{task_id}/segments", response_model=TaskSegmentsResponse)
+def get_task_segments(
+    request: Request,
+    task_id: UUID,
+    after: int = Query(default=0, ge=0),
+    limit: int = Query(default=500, ge=1, le=2000),
+) -> TaskSegmentsResponse:
+    """增量拉取转写片段（阶段 3）。
+
+    复用既有轮询：前端带上拉到的位置 ``after``，只取新增部分，避免长内容重复传输。
+    """
+    record = request.app.state.task_service.get(str(task_id))
+    segments, total = _task_segments(request, record, after=after, limit=limit)
+    next_after = after + len(segments)
+    return TaskSegmentsResponse(
+        task_id=record.task_id,
+        status=record.status,
+        partial=record.status != TaskStatus.SUCCEEDED,
+        total=total,
+        next_after=next_after,
+        has_more=next_after < total,
+        segments=[
+            SegmentItem(index=s.index, start=s.start, end=s.end, text=s.text) for s in segments
+        ],
+    )
+
+
+def _task_segments(
+    request: Request, record: TaskRecord, *, after: int, limit: int
+) -> tuple[list[StoredSegment], int]:
+    store = request.app.state.segment_store
+    stored = store.read(record.task_id, after=after, limit=limit)
+    total = store.count(record.task_id)
+    if total:
+        return stored, total
+    # 字幕路径不经过转写，没有逐段落盘；成功后片段直接从产物读取，
+    # 让这个接口在“字幕”与“转写”两条链路上语义一致。
+    if record.status == TaskStatus.SUCCEEDED and record.artifacts.result:
+        result = request.app.state.export_service.load_result(Path(record.artifacts.result))
+        items = [
+            StoredSegment(index=index, start=s.start, end=s.end, text=s.text)
+            for index, s in enumerate(result.segments)
+        ]
+        return items[after : after + limit], len(items)
+    return [], 0
 
 
 @router.get("/tasks/{task_id}/result", response_model=TranscriptResult)

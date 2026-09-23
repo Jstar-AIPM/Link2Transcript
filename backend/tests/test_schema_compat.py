@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
-from backend.app.schemas.task import MediaType, Platform, SourceType, TaskStatus
+from backend.app.schemas.task import CURRENT_SCHEMA_VERSION, MediaType, Platform, SourceType, TaskStatus
 from backend.app.services.task_service import TaskService
 
 
@@ -70,7 +70,11 @@ def test_v1_record_is_readable_and_migrated_on_next_write(tmp_path: Path):
 
     service.set_original_filename(TASK_ID, "改名后的音频")
     raw = json.loads((tasks_dir / f"{TASK_ID}.json").read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == CURRENT_SCHEMA_VERSION
+    # v1 → v3 迁移时补齐新字段，不需要人工干预
+    assert raw["segment_count"] == 0
+    assert raw["partial_result_available"] is False
+    assert raw["stage_message"] is None
     assert raw["original_filename"] == "改名后的音频"
     assert raw["stored_filename"] == "source.m4a"
     assert raw["size_bytes"] == 18549305
@@ -135,7 +139,7 @@ def test_v2_platform_task_records_new_fields(settings):
         resolved_url="https://www.bilibili.com/video/BV1BqhB6nEdN",
     )
     raw = json.loads((settings.tasks_dir / f"{task_id}.json").read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == CURRENT_SCHEMA_VERSION
     assert raw["source_type"] == "platform_url"
     assert raw["platform"] == "bilibili"
     assert raw["resolved_url"] == "https://www.bilibili.com/video/BV1BqhB6nEdN"

@@ -60,7 +60,7 @@ WHISPER_MODEL=small
 WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
 MAX_UPLOAD_MB=2048
-MAX_MEDIA_MINUTES=0
+MAX_MEDIA_MINUTES=360
 MAX_DOWNLOAD_MB=1024
 TASK_MAX_WORKERS=1
 ```
@@ -106,7 +106,9 @@ API 文档：<http://127.0.0.1:8000/docs>
 | --- | --- | --- |
 | `POST` | `/api/v1/tasks` | 上传一个文件并创建任务 |
 | `POST` | `/api/v1/tasks/from-url` | 提交一个 B 站链接并创建任务 |
-| `GET` | `/api/v1/tasks/{task_id}` | 查询任务状态 |
+| `GET` | `/api/v1/tasks/{task_id}` | 查询任务状态（含进度） |
+| `GET` | `/api/v1/tasks/{task_id}/segments` | **增量**拉取转写片段（转写过程中可反复调用） |
+| `POST` | `/api/v1/tasks/{task_id}/cancel` | 取消任务（已生成的内容保留） |
 | `GET` | `/api/v1/tasks/{task_id}/result` | 获取结构化逐字稿 |
 | `GET` | `/api/v1/tasks/{task_id}/download/markdown` | 下载 Markdown |
 | `GET` | `/api/v1/tasks/{task_id}/download/txt` | 下载 TXT |
@@ -126,10 +128,46 @@ curl -X POST http://127.0.0.1:8000/api/v1/tasks/from-url \
 本地视频：pending → validating → extracting_audio → transcribing → exporting → succeeded
 B站有字幕：pending → checking_subtitle → exporting → succeeded
 B站无字幕：pending → checking_subtitle → downloading_audio → transcribing → exporting → succeeded
-任何处理中状态 → failed
+任何处理中状态 → failed 或 cancelled（用户主动取消）
 ```
 
+终态有三个：`succeeded` / `failed` / `cancelled`。取消与失败同一套语义：
+已生成的部分内容保留、可继续通过片段接口读取，但**不生成可下载文件**。
+取消是**立即**生效的（接口马上返回 `cancelled`），工作线程会在下一个片段边界停止 ——
+因此机器高负载时可能有十几秒的延迟，但不会影响已落盘的内容。
+
 链接类错误在**创建任务之前**就会返回（非法链接不会留下失败记录）；时长、可用性、多 P 等需要联网判断的错误，会在 `checking_subtitle` 阶段让任务进入 `failed`，并给出中文说明。
+
+### 转写过程实时反馈（阶段 3A 后端已就绪）
+
+转写是逐段产出的：每产出一个片段就立即追加到 `data/outputs/{task_id}/segments.jsonl`，
+因此任务**失败或被强杀时已生成的内容也不会丢**。调用方用轮询增量拉取：
+
+```bash
+# 第一次从 0 开始；之后把上次响应里的 next_after 作为 after 传回
+curl 'http://127.0.0.1:8000/api/v1/tasks/{task_id}/segments?after=0&limit=500'
+```
+
+```json
+{
+  "task_id": "...",
+  "status": "transcribing",
+  "partial": true,
+  "total": 128,
+  "next_after": 128,
+  "has_more": false,
+  "segments": [{"index": 0, "start": 0.4, "end": 5.4, "text": "毕业之后呢"}]
+}
+```
+
+- `partial: true` 表示这是**尚未完成**的部分结果，任务成功后为 `false`（此时接口返回完整片段；
+  有字幕的链接任务也走同一接口，片段直接来自成功产物）；
+- 任务状态接口同时给出 `segment_count`、`transcribed_seconds`、`progress_percent`、
+  `partial_result_available`；
+- 失败时**不生成** `transcript.md` / `transcript.txt` / `result.json`：保持“成功产物才可下载”的语义，
+  避免半成品被当成完整逐字稿；
+- “正在加载语音识别模型”这类细粒度文案会出现在首字延迟期间（模型加载与音频分析），
+  避免这段时间看起来像卡死。
 
 ## 测试
 
@@ -148,7 +186,9 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 - **有字幕时断言不调用语音识别**；
 - 任务状态流转、JSON 持久化与重启恢复；
 - 视频处理链路编排、音频提取 / 转写 / 导出失败路径；
-- schema v1 历史记录可读、可下载、写入时升级为 v2；
+- 逐段实时落盘、增量接口（`after` / `limit` / `partial` / `has_more`）、进度百分比与阶段文案；
+- 失败保留部分结果且不生成成功产物、末行被截断（进程被强杀）时的容错；
+- schema v1 / v2 历史记录可读、可下载、写入时升级为 v3；
 - 所有用户可见错误文案均为中文且不含技术术语。
 
 ## 真实验收
@@ -170,14 +210,18 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 2. 无字幕视频：应显示「未发现可用字幕，正在下载音频」，处理方式为「语音转写」；
 3. 无效链接 / 非 B 站链接：提交时立即出现中文提示，且不产生任务记录；
 4. 多 P 链接：提示「当前只支持单个视频，请粘贴某一个分集（分 P）的链接」；
-5. 超长内容（如 4 小时以上的播客）：**不再拒绝**，会正常处理并在页面上持续显示进度与预计耗时。
+5. 超过 6 小时的内容：在下载前就被拒绝，并提示上限；4–5 小时的播客正常支持。
 6. 大会员专享视频：提示「该视频为大会员专享内容，当前只能获取预览片段…」（**不会用预览片段冒充完整逐字稿**）。
 
 ## 长任务与已知限制
 
-- **不限制内容时长**。2026-09-22 实测：字幕路径秒级完成，转写路径约 3–4 倍实时，因此 4–5 小时的播客可以正常跑完。如果需要重新启用限制，把 `MAX_MEDIA_MINUTES` 改为正整数即可。
-- 转写耗时仍与音频时长成正比。1 小时内容约需 15–20 分钟，5 小时内容约需 75–100 分钟。页面会显示已用时间和预计剩余时间，刷新不会丢进度。
+- 内容时长上限 **6 小时**（`MAX_MEDIA_MINUTES=360`），用于挡住过于夸张的输入；4–5 小时的播客正常支持。
+  链接任务在**下载前**用元信息判断，超限不会浪费下载流量。设为 `0` 表示不限制。
+- 转写耗时与音频时长成正比。1 小时内容约需 15–20 分钟，5 小时内容约需 75–100 分钟。页面会显示进度、预计耗时，刷新不丢进度。
+- **中断/崩溃不会白跑**：片段是逐段写入磁盘的，服务被杀掉或重启后，有进度的任务会自动从断点续写（重叠 2 秒 + 按时间戳去重），不会重跑已完成的部分。
+  不想自动续跑时设 `RESUME_ON_STARTUP=false`，行为回退到“标记中断失败”。
 - 链接链路**只下载音频轨**，不下载视频。5 小时内容通常只有 200–400 MB。
+- 转写时需要把音频解码进内存（约 64 KB/秒）：6 小时内容约占 1.3 GB，这是本机运行需要预留的内存。
 - **没有人声的内容会明确失败，不会输出垃圾文本**：
   - 文件不包含音轨：`该文件不包含音轨，无法生成逐字稿。请确认文件是否正确。`
   - 内容里没有人声（静音 / 纯音乐）：`未在文件中检测到人声。请确认文件是否正确，或更换包含人声的文件后重试。`（链接来源会换为针对视频的说法）
@@ -186,7 +230,11 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 - **大会员专享视频不支持**：只能拿到几分钟的预览片段，会被明确拒绝而不是输出错误结果。
 - **多 P / 合集不支持**：一个任务只产出一份逐字稿。
 - **中文识别可能夹杂繁体字或同音错字**：这是 Whisper 模型本身的限制，当前版本不做自动纠正。
-- 分片转写、进度百分比、取消任务、转写过程实时呈现**不在当前版本范围内**，已记录在《后续路线图与待办清单》。
+- 转写过程已支持逐段落盘、增量拉取、进度百分比、**取消任务**与「未完成/已取消」标注（后端 + 验收页）；
+  取消与失败都不会生成可下载文件（成功产物才可下载）。
+- **取消任务**已在验收页提供（“取消任务”按钮；接口 `POST /api/v1/tasks/{id}/cancel`）；
+  固定分片转写已实测否决（带背景音乐的内容没有可用静音点，理由见第三阶段技术文档）。
+  以上均已记录在《后续路线图与待办清单》。
 
 运行数据集中存放在 `data/`，不会提交到 Git。日志只记录任务 ID、阶段、错误类型和耗时，不记录完整音视频、逐字稿正文或 Cookie。
 
@@ -211,5 +259,6 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 - `开发文档/第一阶段技术开发文档_本地文件核心链路.md`：第一阶段设计与验收；
 - `开发文档/第二阶段技术开发文档_B站链接链路.md`：第二阶段设计与验收；
 - `开发文档/第二阶段真实验收记录.md`：第二阶段的真实链接实测记录与已修复问题；
+- `开发文档/第三阶段真实验收记录.md`：第三阶段的真实长内容、强杀续写、刷新、取消实测记录；
 - `开发文档/后续路线图与待办清单.md`：**所有后置项的集中登记处**；
 - `skill/SKILL.md`：逐字稿提取工作流的说明层。

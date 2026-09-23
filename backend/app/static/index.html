@@ -15,14 +15,28 @@
       .modes { display: flex; gap: 8px; margin-bottom: 4px; }
       .modes button { background: #eef2f9; color: #172033; border: 1px solid #dde3ec; }
       .modes button[aria-selected="true"] { background: #2563eb; color: white; border-color: #2563eb; }
-      button, a.button { border: 0; border-radius: 8px; background: #2563eb; color: white; padding: 10px 16px; cursor: pointer; text-decoration: none; display: inline-block; }
+      button, a.button { border: 0; border-radius: 8px; background: #2563eb; color: white; padding: 10px 16px; cursor: pointer; text-decoration: none; display: inline-block; font-size: 15px; }
       button:disabled { opacity: .5; cursor: wait; }
-      #status { font-weight: 600; } #error { color: #b42318; white-space: pre-wrap; }
+      button.secondary { background: #eef2f9; color: #172033; border: 1px solid #dde3ec; }
+      button.danger { background: #b42318; }
+      #status { font-weight: 600; font-size: 17px; }
+      #error { color: #b42318; white-space: pre-wrap; margin-top: 8px; }
+      #incomplete { margin-top: 12px; padding: 12px 14px; border-radius: 10px; background: #fff7e6; border: 1px solid #f5d597; color: #7a4b06; line-height: 1.6; }
       #task-detail { color: #667085; margin-top: 10px; }
-      #meta { color: #667085; margin-bottom: 12px; line-height: 1.7; }
-      #transcript { white-space: pre-wrap; line-height: 1.7; max-height: 480px; overflow: auto; }
+      #meta { color: #667085; margin-bottom: 12px; line-height: 1.7; white-space: pre-wrap; }
+      .progress { margin-top: 14px; display: flex; align-items: center; gap: 12px; }
+      .bar { flex: 1; height: 8px; background: #e7ecf5; border-radius: 999px; overflow: hidden; }
+      .bar > div { height: 100%; width: 0; background: #2563eb; transition: width .3s ease; }
+      #progress-text { color: #667085; font-size: 14px; white-space: nowrap; }
+      .transcript-head { display: flex; align-items: center; justify-content: space-between; margin: 18px 0 8px; }
+      .transcript-head h2 { margin: 0; font-size: 15px; color: #667085; font-weight: 600; }
+      #transcript { line-height: 1.75; max-height: 420px; overflow: auto; border: 1px solid #eef1f6; border-radius: 10px; padding: 12px 14px; }
+      #transcript:empty::before { content: "正在等待第一段内容…"; color: #98a2b3; }
+      .seg { margin: 0 0 6px; }
+      .seg .ts { color: #98a2b3; font-variant-numeric: tabular-nums; margin-right: 8px; font-size: 13px; }
       .downloads { display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap; }
       .hint { color: #667085; margin: 6px 0 0; font-size: 14px; }
+      .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
       [hidden] { display: none !important; }
     </style>
   </head>
@@ -55,14 +69,28 @@
 
       <section id="progress" hidden>
         <div id="status"></div>
+        <div class="progress">
+          <div class="bar"><div id="bar-fill"></div></div>
+          <span id="progress-text"></span>
+        </div>
         <div id="task-detail"></div>
+        <div id="incomplete" hidden></div>
         <div id="error"></div>
+
+        <div class="transcript-head">
+          <h2>逐字稿</h2>
+          <button id="follow" class="secondary" hidden>回到最新</button>
+        </div>
+        <div id="transcript"></div>
+
+        <div class="actions">
+          <button id="cancel" class="danger" hidden>取消任务</button>
+        </div>
       </section>
 
       <section id="result" hidden>
         <h2 id="filename"></h2>
         <div id="meta"></div>
-        <div id="transcript"></div>
         <div class="downloads">
           <a id="markdown" class="button">下载 Markdown</a>
           <a id="txt" class="button">下载 TXT</a>
@@ -70,13 +98,26 @@
       </section>
     </main>
     <script>
+      // 单次轮询请求超时（毫秒）。机器高负载时接口可能十几秒才返回，
+      // 超时按“连接暂时中断”处理并重试，避免误判为任务失败。
+      const REQUEST_TIMEOUT_MS = 30000;
+      // 上传大文件可能很慢（上限 2048 MB），单独给更长的超时
+      const UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+      const MAX_POLL_FAILURES = 5;
+
       const fileInput = document.querySelector('#file');
       const urlInput = document.querySelector('#url');
       const submit = document.querySelector('#submit');
+      const cancelButton = document.querySelector('#cancel');
       const progress = document.querySelector('#progress');
       const statusNode = document.querySelector('#status');
       const errorNode = document.querySelector('#error');
+      const incompleteNode = document.querySelector('#incomplete');
       const detailNode = document.querySelector('#task-detail');
+      const barFill = document.querySelector('#bar-fill');
+      const progressText = document.querySelector('#progress-text');
+      const transcriptNode = document.querySelector('#transcript');
+      const followButton = document.querySelector('#follow');
       const metaNode = document.querySelector('#meta');
       const resultNode = document.querySelector('#result');
       const panelFile = document.querySelector('#panel-file');
@@ -84,12 +125,17 @@
       const modeFile = document.querySelector('#mode-file');
       const modeUrl = document.querySelector('#mode-url');
       const activeTaskKey = 'transcript-extractor.active-task-id';
+
       let config = { max_upload_mb: 2048, task_poll_interval_seconds: 2, max_media_minutes: 0 };
       let currentMode = 'file';
       let currentTask = null;
       let elapsedTimer = null;
+      let nextAfter = 0;        // 已经拉取到的片段位置（增量拉取的游标）
+      let following = true;     // 是否自动跟随最新内容
+      let running = false;
 
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
       const formatDuration = seconds => {
         const value = Math.max(0, Math.floor(seconds || 0));
         const hours = Math.floor(value / 3600);
@@ -100,6 +146,35 @@
           : `${minutes}分${String(secs).padStart(2, '0')}秒`;
       };
 
+      const formatTimestamp = seconds => {
+        const value = Math.max(0, Math.floor(seconds || 0));
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor((value % 3600) / 60);
+        const secs = value % 60;
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
+      };
+
+      function setFollowing(value) {
+        following = value;
+        followButton.hidden = value;
+      }
+
+      function scrollToTail() {
+        if (following) transcriptNode.scrollTop = transcriptNode.scrollHeight;
+      }
+
+      transcriptNode.addEventListener('scroll', () => {
+        // 用户手动上滚时暂停自动跟随，不抢用户的操作；滚回底部后恢复
+        const distance = transcriptNode.scrollHeight - transcriptNode.scrollTop - transcriptNode.clientHeight;
+        setFollowing(distance < 24);
+      });
+
+      followButton.addEventListener('click', () => {
+        setFollowing(true);
+        scrollToTail();
+      });
+
       function switchMode(mode) {
         currentMode = mode;
         modeFile.setAttribute('aria-selected', String(mode === 'file'));
@@ -109,9 +184,25 @@
         errorNode.textContent = '';
       }
 
+      function renderStatus(task) {
+        statusNode.textContent = task.stage_message;
+        cancelButton.hidden = !task.cancellable;
+        cancelButton.disabled = !task.cancellable;
+
+        const percent = Math.max(0, Math.min(100, task.progress_percent || 0));
+        barFill.style.width = `${percent}%`;
+        const parts = [];
+        if (task.media_duration_seconds) {
+          parts.push(`已转写 ${formatDuration(task.transcribed_seconds || 0)} / 共 ${formatDuration(task.media_duration_seconds)}`);
+        }
+        if (task.segment_count) parts.push(`已生成 ${task.segment_count} 段`);
+        parts.push(`进度 ${percent}%`);
+        progressText.textContent = parts.join(' · ');
+      }
+
       function renderTaskDetail() {
         if (!currentTask) { detailNode.textContent = ''; return; }
-        const terminal = ['succeeded', 'failed'].includes(currentTask.status);
+        const terminal = ['succeeded', 'failed', 'cancelled'].includes(currentTask.status);
         const elapsed = terminal
           ? currentTask.elapsed_seconds
           : (Date.now() - new Date(currentTask.created_at).getTime()) / 1000;
@@ -126,7 +217,7 @@
       }
 
       function startElapsedTimer() {
-        if (elapsedTimer) clearInterval(elapsedTimer);
+        stopElapsedTimer();
         elapsedTimer = setInterval(renderTaskDetail, 1000);
       }
 
@@ -135,8 +226,8 @@
         elapsedTimer = null;
       }
 
-      async function jsonOrError(response) {
-        let payload;
+      async function readJson(response) {
+        let payload = null;
         try {
           payload = await response.json();
         } catch (_) {
@@ -146,11 +237,78 @@
         return payload;
       }
 
+      async function httpJson(url, options) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+        let response;
+        try {
+          response = await fetch(url, { ...(options || {}), signal: controller.signal });
+        } catch (error) {
+          if (error.name === 'AbortError') throw new Error('请求超时，请稍后重试');
+          throw error;
+        } finally {
+          clearTimeout(timer);
+        }
+        return readJson(response);
+      }
+
+      function appendSegments(segments) {
+        const fragment = document.createDocumentFragment();
+        for (const segment of segments) {
+          const row = document.createElement('div');
+          row.className = 'seg';
+          const stamp = document.createElement('span');
+          stamp.className = 'ts';
+          stamp.textContent = `[${formatTimestamp(segment.start)}]`;
+          const text = document.createElement('span');
+          text.textContent = segment.text;
+          row.append(stamp, text);
+          fragment.append(row);
+        }
+        transcriptNode.append(fragment);
+        scrollToTail();
+      }
+
+      async function pullSegments(taskId) {
+        // 增量拉取：只取 nextAfter 之后的新片段，长内容不会反复传输
+        const page = await httpJson(`/api/v1/tasks/${taskId}/segments?after=${nextAfter}&limit=500`);
+        if (page.segments.length) {
+          appendSegments(page.segments);
+          nextAfter = page.next_after;
+        }
+        return page;
+      }
+
+      function renderIncomplete(title, reason) {
+        const hasContent = transcriptNode.childElementCount > 0;
+        incompleteNode.textContent = hasContent
+          ? `${title}：已生成的内容保留在下方，但没有生成可下载文件。${reason || ''}`
+          : `${title}：${reason || '没有生成任何内容。'}`;
+        incompleteNode.hidden = false;
+      }
+
       function renderMeta(task) {
         const parts = [];
         if (task.source_url) parts.push(`来源：${task.source_url}`);
         parts.push(`处理方式：${task.processing_method_label}`);
+        if (task.media_duration_seconds) parts.push(`媒体时长：${formatDuration(task.media_duration_seconds)}`);
         metaNode.textContent = parts.join('\n');
+      }
+
+      function resetView() {
+        currentTask = null;
+        nextAfter = 0;
+        setFollowing(true);
+        transcriptNode.textContent = '';
+        metaNode.textContent = '';
+        progressText.textContent = '';
+        barFill.style.width = '0%';
+        incompleteNode.hidden = true;
+        incompleteNode.textContent = '';
+        resultNode.hidden = true;
+        cancelButton.hidden = true;
+        errorNode.textContent = '';
+        detailNode.textContent = '';
       }
 
       async function poll(taskId) {
@@ -159,31 +317,43 @@
         startElapsedTimer();
         while (true) {
           try {
-            const task = await jsonOrError(await fetch(`/api/v1/tasks/${taskId}`));
+            const task = await httpJson(`/api/v1/tasks/${taskId}`);
             consecutiveFailures = 0;
             currentTask = task;
-            statusNode.textContent = task.stage_message;
+            renderStatus(task);
             renderTaskDetail();
-            if (task.status === 'failed') {
-              stopElapsedTimer();
-              throw new Error(task.error?.message || '处理失败');
-            }
+            await pullSegments(taskId);
+
             if (task.status === 'succeeded') {
+              await pullSegments(taskId); // 收尾：确保最后几段也渲染出来
               stopElapsedTimer();
-              const result = await jsonOrError(await fetch(`/api/v1/tasks/${taskId}/result`));
-              document.querySelector('#filename').textContent = result.original_filename;
+              document.querySelector('#filename').textContent = task.source_url || '逐字稿已完成';
               renderMeta(task);
-              document.querySelector('#transcript').textContent = result.text;
               document.querySelector('#markdown').href = task.artifacts.markdown;
               document.querySelector('#txt').href = task.artifacts.txt;
               resultNode.hidden = false;
+              statusNode.textContent = task.stage_message;
+              return;
+            }
+            if (task.status === 'failed') {
+              stopElapsedTimer();
+              renderIncomplete('任务未完成', task.error?.message || '');
+              return;
+            }
+            if (task.status === 'cancelled') {
+              stopElapsedTimer();
+              renderIncomplete('任务已取消', '已生成的内容可以查看，需要完整逐字稿请重新发起任务。');
               return;
             }
           } catch (error) {
-            if (currentTask?.status === 'failed') throw error;
+            if (['failed', 'succeeded', 'cancelled'].includes(currentTask?.status)) return;
             consecutiveFailures += 1;
-            if (consecutiveFailures >= 5) { stopElapsedTimer(); throw error; }
-            statusNode.textContent = `连接暂时中断，正在重试（${consecutiveFailures}/5）`;
+            if (consecutiveFailures >= MAX_POLL_FAILURES) {
+              stopElapsedTimer();
+              errorNode.textContent = `连接暂时中断，请稍后刷新页面继续查看。${error.message || ''}`;
+              return;
+            }
+            statusNode.textContent = `连接暂时中断，正在重试（${consecutiveFailures}/${MAX_POLL_FAILURES}）`;
           }
           await sleep(config.task_poll_interval_seconds * 1000);
         }
@@ -193,26 +363,32 @@
         return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv)\//i.test(value);
       }
 
-      async function startTask(request) {
+      async function startTask(perform) {
+        // perform: (signal) => Promise<Response>
+        running = true;
         submit.disabled = true;
-        resultNode.hidden = true;
         progress.hidden = false;
-        currentTask = null;
-        detailNode.textContent = '';
-        metaNode.textContent = '';
-        errorNode.textContent = '';
+        resetView();
         statusNode.textContent = '正在提交任务';
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
         try {
-          const created = await jsonOrError(await request());
+          const created = await readJson(await perform(controller.signal));
+          clearTimeout(timer);
           await poll(created.task_id);
         } catch (error) {
-          errorNode.textContent = error.message;
+          errorNode.textContent = error.name === 'AbortError'
+            ? '提交超时，请检查文件大小与网络后重试'
+            : error.message;
         } finally {
+          clearTimeout(timer);
+          running = false;
           submit.disabled = false;
         }
       }
 
       submit.addEventListener('click', async () => {
+        if (running) return;
         if (currentMode === 'url') {
           const url = urlInput.value.trim();
           if (!url) { progress.hidden = false; errorNode.textContent = '请先粘贴 B 站视频链接'; return; }
@@ -221,10 +397,11 @@
             errorNode.textContent = '链接格式不正确，请粘贴完整的 B 站视频链接';
             return;
           }
-          await startTask(() => fetch('/api/v1/tasks/from-url', {
+          await startTask((signal) => fetch('/api/v1/tasks/from-url', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url }),
+            signal,
           }));
           return;
         }
@@ -236,11 +413,25 @@
           errorNode.textContent = `文件不能超过 ${config.max_upload_mb} MB`;
           return;
         }
-        await startTask(() => {
+        await startTask((signal) => {
           const form = new FormData();
           form.append('file', file);
-          return fetch('/api/v1/tasks', { method: 'POST', body: form });
+          return fetch('/api/v1/tasks', { method: 'POST', body: form, signal });
         });
+      });
+
+      cancelButton.addEventListener('click', async () => {
+        if (!currentTask || !window.confirm('确定要取消这个任务吗？已生成的内容会保留，但不会生成可下载文件。')) return;
+        cancelButton.disabled = true;
+        try {
+          const task = await httpJson(`/api/v1/tasks/${currentTask.task_id}/cancel`, { method: 'POST' });
+          currentTask = task;
+          renderStatus(task);
+          renderIncomplete('任务已取消', '已生成的内容可以查看，需要完整逐字稿请重新发起任务。');
+        } catch (error) {
+          errorNode.textContent = error.message;
+          cancelButton.disabled = false;
+        }
       });
 
       modeFile.addEventListener('click', () => switchMode('file'));
@@ -248,7 +439,7 @@
 
       async function initialize() {
         try {
-          config = await jsonOrError(await fetch('/api/v1/config'));
+          config = await httpJson('/api/v1/config');
         } catch (_) {
           /* 使用默认值兜底 */
         }
@@ -259,6 +450,8 @@
 
         const taskId = localStorage.getItem(activeTaskKey);
         if (!taskId) return;
+        // 刷新后从磁盘上的片段重放：先看到的内容与刷新前一致，然后继续增量更新
+        running = true;
         submit.disabled = true;
         progress.hidden = false;
         statusNode.textContent = '正在恢复上次任务';
@@ -267,6 +460,7 @@
         } catch (error) {
           errorNode.textContent = error.message;
         } finally {
+          running = false;
           submit.disabled = false;
         }
       }
