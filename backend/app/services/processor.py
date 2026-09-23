@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
+from typing import Callable
 
 from backend.app.core.errors import AppError
 from backend.app.core.filenames import sanitize_filename
@@ -95,11 +96,13 @@ class _TranscriptionProgress:
         task_id: str,
         interval_seconds: float = 1.0,
         existing_segments: list[TranscriptSegment] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.task_service = task_service
         self.segment_store = segment_store
         self.task_id = task_id
         self.interval_seconds = max(0.0, interval_seconds)
+        self.is_cancelled = is_cancelled
         # 已落盘片段（续写时为上次中断前的内容）+ 本次新产出的片段，
         # 两者拼在一起才是完整结果；按时间戳去重，不做文本比对。
         self.collected: list[TranscriptSegment] = list(existing_segments or [])
@@ -121,6 +124,10 @@ class _TranscriptionProgress:
             self.task_service.set_stage_message(self.task_id, message)
 
     def on_segment(self, segment: TranscriptSegment) -> None:
+        # 取消检查点（阶段 3D）：每个片段产出时都看一眼是否已被取消，
+        # 是则立即停止解码；已落盘的片段保留。
+        if self.is_cancelled is not None and self.is_cancelled():
+            raise AppError("TASK_CANCELLED", "任务已取消")
         # 重叠区：断点前的片段已经落盘过，直接丢弃（时间戳去重）。
         if self.resumed and segment.end <= self.checkpoint:
             return
@@ -354,6 +361,7 @@ class TaskProcessor:
             task_id=task_id,
             interval_seconds=self.progress_persist_interval_seconds,
             existing_segments=resume.existing_segments,
+            is_cancelled=lambda: self.task_service.is_cancelled(task_id),
         )
         try:
             transcription = self.transcription_service.transcribe(
@@ -441,6 +449,9 @@ class TaskProcessor:
 
     def _export_and_succeed(self, task_id: str, result: TranscriptResult, task_started: float) -> None:
         stage_started = perf_counter()
+        # 导出前的最后一个取消检查点：取消后的任务不应生成成功产物。
+        if self.task_service.is_cancelled(task_id):
+            raise AppError("TASK_CANCELLED", "任务已取消")
         self.task_service.transition(task_id, TaskStatus.EXPORTING)
         markdown_path, txt_path, result_path = self.export_service.export(result)
         artifacts = TaskArtifacts(
@@ -485,25 +496,30 @@ class TaskProcessor:
             perf_counter() - started_at,
         )
 
+    def sync_partial_progress(self, task_id: str) -> None:
+        """把任务记录里的进度与磁盘上的片段对齐（磁盘是权威数据源）。
+
+        两处会用到：任务失败时、用户取消时。进度写回是按秒节流的，
+        这两个时刻记录可能落后于实际落盘量，而界面上的“已生成 N 段”
+        必须与用户真能读到的内容一致。
+        """
+        stored = self.segment_store.read_all(task_id)
+        if not stored:
+            return
+        self.task_service.mark_partial_result(task_id, available=True)
+        self.task_service.set_progress(
+            task_id,
+            segment_count=len(stored),
+            transcribed_seconds=max(segment.end for segment in stored),
+        )
+
     def _mark_partial_result(self, task_id: str) -> None:
         """任务失败时，如果磁盘上已有片段，就标记“部分结果可用”。
 
         部分结果不生成 ``transcript.md`` / ``txt`` / ``result.json``：保持
         “成功产物才可下载”的既有语义，避免半成品被当成完整逐字稿。
-
-        同时把进度字段与磁盘上的片段对齐：进度是按秒节流写回的，最后由强杀导致的
-        中断可能落后于实际落盘量，而界面上的“已生成 N 段”应该与用户能读到的内容一致。
-        （磁盘才是权威数据源）
         """
         try:
-            stored = self.segment_store.read_all(task_id)
-            if not stored:
-                return
-            self.task_service.mark_partial_result(task_id, available=True)
-            self.task_service.set_progress(
-                task_id,
-                segment_count=len(stored),
-                transcribed_seconds=max(segment.end for segment in stored),
-            )
+            self.sync_partial_progress(task_id)
         except Exception:  # noqa: BLE001 - 标记失败不应掩盖真正的失败原因
             logger.warning("partial_result_mark_failed task_id=%s", task_id, exc_info=True)

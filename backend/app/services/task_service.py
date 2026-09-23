@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from backend.app.core.errors import AppError, TaskNotFoundError
 from backend.app.schemas.task import (
     CURRENT_SCHEMA_VERSION,
+    TERMINAL_STATUSES,
     ExtractMethod,
     MediaType,
     Platform,
@@ -34,23 +35,48 @@ logger = logging.getLogger(__name__)
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     # 说明：可续跑的任务由 ``requeue_for_resume`` 显式回到 pending，
     # 不走这张表（状态机本身不允许 transcribing → validating）。
-    TaskStatus.PENDING: {TaskStatus.VALIDATING, TaskStatus.CHECKING_SUBTITLE, TaskStatus.FAILED},
+    # 阶段 3D：任何非终态都可以进入 cancelled（用户主动取消）。
+    TaskStatus.PENDING: {
+        TaskStatus.VALIDATING,
+        TaskStatus.CHECKING_SUBTITLE,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.VALIDATING: {
         TaskStatus.EXTRACTING_AUDIO,
         TaskStatus.TRANSCRIBING,
         TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
     },
     TaskStatus.CHECKING_SUBTITLE: {
         TaskStatus.DOWNLOADING_AUDIO,
         TaskStatus.EXPORTING,
         TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
     },
-    TaskStatus.DOWNLOADING_AUDIO: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
-    TaskStatus.EXTRACTING_AUDIO: {TaskStatus.TRANSCRIBING, TaskStatus.FAILED},
-    TaskStatus.TRANSCRIBING: {TaskStatus.EXPORTING, TaskStatus.FAILED},
-    TaskStatus.EXPORTING: {TaskStatus.SUCCEEDED, TaskStatus.FAILED},
+    TaskStatus.DOWNLOADING_AUDIO: {
+        TaskStatus.TRANSCRIBING,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.EXTRACTING_AUDIO: {
+        TaskStatus.TRANSCRIBING,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.TRANSCRIBING: {
+        TaskStatus.EXPORTING,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
+    TaskStatus.EXPORTING: {
+        TaskStatus.SUCCEEDED,
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.SUCCEEDED: set(),
     TaskStatus.FAILED: set(),
+    TaskStatus.CANCELLED: set(),
 }
 
 
@@ -119,6 +145,9 @@ class TaskService:
     ) -> TaskRecord:
         with self._lock:
             record = self.get(task_id)
+            if record.status == TaskStatus.CANCELLED:
+                # 工作线程在检查点发现“已被取消”时用这个异常立即停下来。
+                raise AppError("TASK_CANCELLED", "任务已取消")
             if new_status not in ALLOWED_TRANSITIONS[record.status]:
                 # 状态名（transcribing 等）是内部术语，不能出现在用户可见文案里。
                 logger.warning(
@@ -182,6 +211,38 @@ class TaskService:
         """标记这是一份保留的部分结果（失败时已生成的片段不丢弃）。"""
         return self._update(task_id, partial_result_available=available)
 
+    def request_cancel(self, task_id: str) -> TaskRecord:
+        """用户主动取消任务（阶段 3D）。
+
+        直接落到终态 ``cancelled``（而不是只置一个标志位）：
+        取消必须立即生效，即使工作线程正在下载或解码；
+        工作线程会在下一个检查点（每个片段、每个阶段切换）发现已是终态并停止。
+
+        已落盘的片段保留（``partial_result_available``），但不生成成功产物 ——
+        与失败路径同一语义：半成品不应被当成完整逐字稿下载。
+        """
+        with self._lock:
+            record = self.get(task_id)
+            if record.status in TERMINAL_STATUSES:
+                raise AppError(
+                    "TASK_ALREADY_FINISHED",
+                    "任务已经结束，无法取消",
+                    status_code=409,
+                )
+            record.status = TaskStatus.CANCELLED
+            record.progress_stage = TaskStatus.CANCELLED
+            record.stage_message = None
+            record.updated_at = datetime.now().astimezone()
+            self._write(record)
+            return record
+
+    def is_cancelled(self, task_id: str) -> bool:
+        """工作线程的检查点：这个任务是否已被取消。"""
+        try:
+            return self.get(task_id).status == TaskStatus.CANCELLED
+        except AppError:
+            return False
+
     def requeue_for_resume(self, task_id: str) -> TaskRecord:
         """把有进度的任务放回队列，交给处理器从断点续写（阶段 3B）。
 
@@ -228,7 +289,8 @@ class TaskService:
     ) -> TaskRecord:
         with self._lock:
             record = self.get(task_id)
-            if record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            if record.status in TERMINAL_STATUSES:
+                # 已经结束（成功/失败/已取消）的任务不再被后续异常改写。
                 return record
             failed_stage = record.status
             record.status = TaskStatus.FAILED
@@ -263,7 +325,7 @@ class TaskService:
                 record = self.get(path.stem)
             except AppError:
                 continue
-            if record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            if record.status in TERMINAL_STATUSES:
                 continue
             if is_resumable is not None and is_resumable(record):
                 resumable.append(record)

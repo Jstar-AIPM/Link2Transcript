@@ -108,6 +108,7 @@ API 文档：<http://127.0.0.1:8000/docs>
 | `POST` | `/api/v1/tasks/from-url` | 提交一个 B 站链接并创建任务 |
 | `GET` | `/api/v1/tasks/{task_id}` | 查询任务状态（含进度） |
 | `GET` | `/api/v1/tasks/{task_id}/segments` | **增量**拉取转写片段（转写过程中可反复调用） |
+| `POST` | `/api/v1/tasks/{task_id}/cancel` | 取消任务（已生成的内容保留） |
 | `GET` | `/api/v1/tasks/{task_id}/result` | 获取结构化逐字稿 |
 | `GET` | `/api/v1/tasks/{task_id}/download/markdown` | 下载 Markdown |
 | `GET` | `/api/v1/tasks/{task_id}/download/txt` | 下载 TXT |
@@ -127,8 +128,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/tasks/from-url \
 本地视频：pending → validating → extracting_audio → transcribing → exporting → succeeded
 B站有字幕：pending → checking_subtitle → exporting → succeeded
 B站无字幕：pending → checking_subtitle → downloading_audio → transcribing → exporting → succeeded
-任何处理中状态 → failed
+任何处理中状态 → failed 或 cancelled（用户主动取消）
 ```
+
+终态有三个：`succeeded` / `failed` / `cancelled`。取消与失败同一套语义：
+已生成的部分内容保留、可继续通过片段接口读取，但**不生成可下载文件**。
+取消是**立即**生效的（接口马上返回 `cancelled`），工作线程会在下一个片段边界停止 ——
+因此机器高负载时可能有十几秒的延迟，但不会影响已落盘的内容。
 
 链接类错误在**创建任务之前**就会返回（非法链接不会留下失败记录）；时长、可用性、多 P 等需要联网判断的错误，会在 `checking_subtitle` 阶段让任务进入 `failed`，并给出中文说明。
 
@@ -224,9 +230,10 @@ curl 'http://127.0.0.1:8000/api/v1/tasks/{task_id}/segments?after=0&limit=500'
 - **大会员专享视频不支持**：只能拿到几分钟的预览片段，会被明确拒绝而不是输出错误结果。
 - **多 P / 合集不支持**：一个任务只产出一份逐字稿。
 - **中文识别可能夹杂繁体字或同音错字**：这是 Whisper 模型本身的限制，当前版本不做自动纠正。
-- 转写过程已支持逐段落盘与增量拉取（后端），进度百分比与「正在生成逐字稿（已生成 N 段）」文案已可用；
-  验收页的增量渲染与「未完成」标注在阶段 3C 完成。
-- **取消任务**不在当前版本范围内；固定分片转写已实测否决（带背景音乐的内容没有可用静音点，理由见第三阶段技术文档）。
+- 转写过程已支持逐段落盘、增量拉取、进度百分比、**取消任务**与「未完成/已取消」标注（后端 + 验收页）；
+  取消与失败都不会生成可下载文件（成功产物才可下载）。
+- **取消任务**已在验收页提供（“取消任务”按钮；接口 `POST /api/v1/tasks/{id}/cancel`）；
+  固定分片转写已实测否决（带背景音乐的内容没有可用静音点，理由见第三阶段技术文档）。
   以上均已记录在《后续路线图与待办清单》。
 
 运行数据集中存放在 `data/`，不会提交到 Git。日志只记录任务 ID、阶段、错误类型和耗时，不记录完整音视频、逐字稿正文或 Cookie。

@@ -19,6 +19,17 @@ class TaskStatus(StrEnum):
     EXPORTING = "exporting"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+#: 终态：到这三个状态就不会再变化（阶段 3D 新增 `cancelled`）。
+TERMINAL_STATUSES = frozenset(
+    {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
+)
+
+
+def is_terminal(status: TaskStatus | str) -> bool:
+    return TaskStatus(status) in TERMINAL_STATUSES
 
 
 class MediaType(StrEnum):
@@ -159,6 +170,8 @@ class TaskStatusResponse(BaseModel):
     transcribed_seconds: float | None = Field(default=None, ge=0)
     progress_percent: float = Field(default=0.0, ge=0, le=100)
     partial_result_available: bool = False
+    #: 用户是否还能取消（终态任务不可取消）
+    cancellable: bool = False
     error: TaskError | None
     artifacts: dict[str, str | None]
 
@@ -216,4 +229,5 @@ STAGE_MESSAGES: dict[TaskStatus, str] = {
     TaskStatus.EXPORTING: "正在生成文件",
     TaskStatus.SUCCEEDED: "逐字稿已生成",
     TaskStatus.FAILED: "处理失败",
+    TaskStatus.CANCELLED: "任务已取消",
 }

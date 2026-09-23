@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from fastapi.responses import FileResponse
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import (
     STAGE_MESSAGES,
+    TERMINAL_STATUSES,
     CreateTaskFromUrlRequest,
     MediaType,
     SegmentItem,
@@ -25,6 +27,9 @@ from backend.app.schemas.task import (
 )
 from backend.app.services.media_service import media_type_for_filename
 from backend.app.services.segment_store import StoredSegment
+
+
+logger = logging.getLogger(__name__)
 
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
@@ -71,7 +76,7 @@ def _progress_percent(record: TaskRecord) -> float:
 
 def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse:
     now = datetime.now().astimezone()
-    terminal = record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}
+    terminal = record.status in TERMINAL_STATUSES
     elapsed_until = record.updated_at if terminal else now
     estimated_remaining: float | None = None
     if record.status == TaskStatus.TRANSCRIBING and record.media_duration_seconds:
@@ -102,6 +107,7 @@ def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse
         transcribed_seconds=record.transcribed_seconds,
         progress_percent=_progress_percent(record),
         partial_result_available=record.partial_result_available,
+        cancellable=not terminal,
         error=record.error,
         artifacts={
             "markdown": f"/api/v1/tasks/{record.task_id}/download/markdown"
@@ -199,6 +205,23 @@ def create_task_from_url(
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 def get_task(request: Request, task_id: UUID) -> TaskStatusResponse:
     return _status_response(request, request.app.state.task_service.get(str(task_id)))
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskStatusResponse)
+def cancel_task(request: Request, task_id: UUID) -> TaskStatusResponse:
+    """取消任务（阶段 3D）。
+
+    立即落到终态 ``cancelled``：工作线程会在下一个检查点停止，
+    已落盘的部分结果保留，但不生成可下载的成功产物。
+    """
+    task_service = request.app.state.task_service
+    record = task_service.request_cancel(str(task_id))
+    # 取消响应里的进度要和磁盘对齐：用户下一秒就能读到已生成的内容。
+    # （进度写回是按秒节流的，而工作线程要到下一个检查点才停止）
+    request.app.state.processor.sync_partial_progress(record.task_id)
+    record = task_service.get(record.task_id)
+    logger.info("task_cancelled task_id=%s segment_count=%s", record.task_id, record.segment_count)
+    return _status_response(request, record)
 
 
 @router.get("/tasks/{task_id}/segments", response_model=TaskSegmentsResponse)
