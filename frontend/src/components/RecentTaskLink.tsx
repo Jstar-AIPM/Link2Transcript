@@ -29,7 +29,7 @@ export function RecentTaskLink() {
         <span className="font-mono text-[12px] text-faint">{recent.taskId.slice(0, 8)}</span>
         <Link
           href={`/tasks/${recent.taskId}`}
-          className="text-[13px] text-ink underline underline-offset-2 hover:text-accent"
+          className="rounded-[4px] px-1 text-[13px] text-accent underline underline-offset-2 transition-colors hover:bg-accent-wash"
         >
           继续查看
         </Link>

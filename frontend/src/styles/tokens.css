@@ -21,11 +21,16 @@
   --color-line: #e5e3df;
   --color-line-strong: #cfccc7;
 
-  /* 唯一强调色（数据条 / 激活态 / callout 竖条 / 焦点环） */
-  --color-accent: #7f8b20;
-  --color-accent-hover: #6f7a1c;
-  --color-accent-mark: rgba(127, 139, 32, 0.38);
-  --color-accent-wash: rgba(127, 139, 32, 0.1);
+  /* 唯一强调色（数据条 / 激活态 / callout 竖条 / 高亮记号）
+     两个层次，分工固定：
+     ① 深黄（荧光笔墨水）—— 用于「文字 / 链接 / 进度填充」，必须看得清；
+        实测对比度：画布 4.71:1、白卡 5.26:1、荧光浅底 4.54:1（均达 AA 正文标准）
+     ② 荧光黄（记号笔）—— 只用于「浅底 / 标题高亮」，不做正文颜色；
+        墨色文字压其上 15:1  */
+  --color-accent: #7e6b00;
+  --color-accent-hover: #6d5c00;
+  --color-accent-mark: rgba(250, 226, 61, 0.6);
+  --color-accent-wash: rgba(250, 226, 61, 0.2);
 
   /* 状态色（克制使用，只用于真实错误/成功/等待） */
   --color-danger: #b3261e;
