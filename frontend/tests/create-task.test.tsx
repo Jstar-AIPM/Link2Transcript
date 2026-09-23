@@ -170,6 +170,34 @@ describe("B 站链接模式", () => {
   });
 });
 
+describe("线上关闭本地上传时（只支持链接）", () => {
+  it("隐藏上传入口、给出说明，且链接模式仍可提交", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes("/tasks/from-url")) {
+        expect(init?.method).toBe("POST");
+        return Promise.resolve(jsonResponse({ task_id: "bv-9", status: "pending" }, true, 202));
+      }
+      return Promise.resolve(
+        jsonResponse({ ...(samples.config as object), enable_local_upload: false }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CreateTaskPanel />);
+
+    await screen.findByText(/当前环境只支持粘贴 B 站视频链接/);
+    // 上传入口消失：没有模式切换、也没有文件选择框
+    expect(screen.queryByRole("tab", { name: "上传本地文件" })).toBeNull();
+    expect(document.querySelector("#file-input")).toBeNull();
+
+    const input = (await screen.findByLabelText("B 站视频链接")) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "https://www.bilibili.com/video/BV1VVhk6pEiR" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/tasks/bv-9"));
+  });
+});
+
 describe("服务不可用", () => {
   it("读不到配置时给出重试入口并禁用提交", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));

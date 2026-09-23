@@ -46,6 +46,11 @@ export function CreateTaskPanel() {
 
   const maxUploadMb = configState.kind === "ready" ? configState.config.max_upload_mb : null;
   const maxMediaMinutes = configState.kind === "ready" ? configState.config.max_media_minutes : null;
+  // 线上环境关闭本地上传（平台请求体上限 16 MiB）；配置未知时先按可用处理，避免误隐藏
+  const uploadEnabled =
+    configState.kind === "ready" ? configState.config.enable_local_upload : true;
+  /** 不支持上传时，界面与提交都退化为链接模式 */
+  const effectiveMode: Mode = uploadEnabled ? mode : "url";
   const busy = submit.kind === "uploading" || submit.kind === "creating";
 
   const fail = useCallback((error: unknown) => {
@@ -126,7 +131,7 @@ export function CreateTaskPanel() {
     if (busy) return;
     setNotice(null);
     setSubmit({ kind: "idle" });
-    if (mode === "file") {
+    if (effectiveMode === "file") {
       void submitFile();
     } else {
       void submitUrl();
@@ -142,22 +147,28 @@ export function CreateTaskPanel() {
       <Card className="p-7">
         <Eyebrow className="mb-3">新建任务</Eyebrow>
 
-        <ModeSwitch
-          value={mode}
-          onChange={(next) => {
-            setMode(next);
-            setSubmit({ kind: "idle" });
-            setNotice(null);
-          }}
-          disabled={busy}
-          options={[
-            { value: "file", label: "上传本地文件" },
-            { value: "url", label: "粘贴 B 站链接" },
-          ]}
-        />
+        {uploadEnabled ? (
+          <ModeSwitch
+            value={mode}
+            onChange={(next) => {
+              setMode(next);
+              setSubmit({ kind: "idle" });
+              setNotice(null);
+            }}
+            disabled={busy}
+            options={[
+              { value: "file", label: "上传本地文件" },
+              { value: "url", label: "粘贴 B 站链接" },
+            ]}
+          />
+        ) : (
+          <p className="rounded-control bg-sunken px-3 py-2 text-[13px] leading-relaxed text-body">
+            当前环境只支持粘贴 B 站视频链接（线上暂不支持上传本地文件）。
+          </p>
+        )}
 
         <div className="mt-5">
-          {mode === "file" ? (
+          {effectiveMode === "file" ? (
             <FileDropZone
               file={file}
               onSelect={(picked) => {

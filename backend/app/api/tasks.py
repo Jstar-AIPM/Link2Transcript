@@ -123,6 +123,13 @@ def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse
 @router.post("/tasks", response_model=TaskCreatedResponse, status_code=202)
 async def create_task(request: Request, file: UploadFile = File(...)) -> TaskCreatedResponse:
     settings = request.app.state.settings
+    if not settings.enable_local_upload:
+        # 线上环境不支持本地上传（平台请求体上限 16 MiB），给明确中文提示与替代方案
+        raise AppError(
+            "LOCAL_UPLOAD_DISABLED",
+            "当前环境暂不支持上传本地文件，请改用 B 站视频链接",
+            status_code=403,
+        )
     task_service = request.app.state.task_service
     filename = _safe_display_filename(file.filename)
     media_type = media_type_for_filename(filename)
@@ -292,10 +299,11 @@ def download_txt(request: Request, task_id: UUID) -> FileResponse:
 
 
 @router.get("/config")
-def get_public_config(request: Request) -> dict[str, int]:
+def get_public_config(request: Request) -> dict[str, int | bool]:
     settings = request.app.state.settings
     return {
         "max_upload_mb": settings.max_upload_mb,
         "task_poll_interval_seconds": settings.task_poll_interval_seconds,
         "max_media_minutes": settings.max_media_minutes,
+        "enable_local_upload": settings.enable_local_upload,
     }

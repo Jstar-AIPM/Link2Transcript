@@ -96,6 +96,8 @@ export const publicConfigSchema = z.object({
   max_upload_mb: z.number(),
   task_poll_interval_seconds: z.number(),
   max_media_minutes: z.number(),
+  /** 线上环境不支持本地上传（平台请求体上限），此时前端隐藏上传入口 */
+  enable_local_upload: z.boolean(),
 });
 export type PublicConfig = z.infer<typeof publicConfigSchema>;
 

@@ -1,0 +1,17 @@
+# veFaaS 打包排除清单（部署前必须校验：包内不含 .env 与 data/）
+.venv/
+data/
+data-*/
+.env
+.env.*
+!.env.example
+.vefaas/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.egg-info/
+.DS_Store
+models/
+frontend/
+开发文档/
+·截图/
