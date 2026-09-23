@@ -43,6 +43,14 @@ src/styles/       设计变量（颜色的唯一来源）
 tests/            组件与契约测试；fixtures 是真实后端响应样本
 ```
 
+## 一个必须记住的约束（别再踩）
+
+**上传不能走 `rewrites` 代理**：Next 的代理层会把请求体读进内存，默认上限 **10 MB**，
+而本项目上传上限是 2048 MB（真实的 13 MB 文件就会 500）。
+因此上传单独由 `src/app/api/v1/tasks/route.ts` **流式转发**（不缓冲、不占内存），
+其余小体积 JSON 接口继续走 `next.config.ts` 的 rewrites。
+`tests/upload-proxy.test.ts` 锁住了这个契约，改动前先看它。
+
 ## 设计基调
 
 颜色/圆角/间距/字号**只能**使用 `src/styles/tokens.css` 里的语义变量，
