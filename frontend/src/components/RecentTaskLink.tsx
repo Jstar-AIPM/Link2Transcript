@@ -16,17 +16,24 @@ export function RecentTaskLink() {
     return () => window.clearTimeout(timer);
   }, []);
 
-  if (!recent) return null;
+  if (!recent) {
+    return <p className="text-[13px] text-faint">提交任务后，这里会记住最近一次任务，方便回来查看。</p>;
+  }
 
   return (
-    <p className="text-[13px] text-ink-muted">
-      上次的任务还在：
-      <Link
-        href={`/tasks/${recent.taskId}`}
-        className="ml-1 underline underline-offset-2 hover:text-ink"
-      >
-        继续查看
-      </Link>
-    </p>
+    <div className="flex items-center justify-between gap-3">
+      <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted">
+        最近任务
+      </span>
+      <span className="flex items-center gap-2">
+        <span className="font-mono text-[12px] text-faint">{recent.taskId.slice(0, 8)}</span>
+        <Link
+          href={`/tasks/${recent.taskId}`}
+          className="text-[13px] text-ink underline underline-offset-2 hover:text-accent"
+        >
+          继续查看
+        </Link>
+      </span>
+    </div>
   );
 }

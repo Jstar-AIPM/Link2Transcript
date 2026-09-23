@@ -1,62 +1,48 @@
-/* 语义化设计变量（唯一来源见《第四阶段设计基调_视觉参考.md》）
-   页面里不允许出现十六进制颜色值；只允许使用这里的变量 / Tailwind 语义类名。 */
+@import "tailwindcss";
 
-:root {
-  /* 面 */
-  --surface-canvas: #faf8f5;
-  --surface-raised: #fdfbfa;
-  --surface-sunken: #f3f1ec;
-  --surface-ink: #27251e;
+/* ============================================================================
+   设计变量 —— 与「03 AI 用户洞察分析器」保持一致的设计语言（系列感）
+   规则：近单色 + 1px hairline 描边代替阴影 + 层级靠字号/字距而非颜色 +
+        单一强调色；强调色只承担「数据 + 激活态」语义，按钮固定用墨色。
+   ========================================================================== */
+@theme {
+  /* 表面：纸感三阶，替代纯白 */
+  --color-canvas: #f4f2f0;
+  --color-surface: #ffffff;
+  --color-sunken: #eceae6;
 
-  /* 字 */
-  --text-primary: #27251e;
-  --text-secondary: #72706b;
-  --text-muted: #92918b;
-  --text-inverse: #faf8f5;
+  /* 文字三阶 */
+  --color-ink: #14120f;
+  --color-body: #3a3733;
+  --color-muted: #6d6c6b;
+  --color-faint: #8b8680;
 
-  /* 线 */
-  --border-hairline: #d1d1cd;
-  --border-strong: #b9b7b1;
+  /* 结构：1px hairline 就是「抬升原件」，全站不用投影 */
+  --color-line: #e5e3df;
+  --color-line-strong: #cfccc7;
 
-  /* 强调：只用于「进行中 / 当前 / 进度 / 可点」 */
-  --accent: #016a71;
-  --accent-hover: #015c62;
-  --accent-soft: #e6f0f0;
-  --accent-ring: rgba(1, 106, 113, 0.35);
+  /* 唯一强调色（数据条 / 激活态 / callout 竖条 / 焦点环） */
+  --color-accent: #7f8b20;
+  --color-accent-hover: #6f7a1c;
+  --color-accent-mark: rgba(127, 139, 32, 0.38);
+  --color-accent-wash: rgba(127, 139, 32, 0.1);
 
-  /* 状态（暖调低饱和，与纸色同族） */
-  --status-success-text: #2f6b4f;
-  --status-success-bg: #eef5f0;
-  --status-warning-text: #7a4b06;
-  --status-warning-bg: #fdf4e6;
-  --status-danger-text: #a4342a;
-  --status-danger-bg: #fbefed;
-  --status-neutral-text: #5f5d58;
-  --status-neutral-bg: #f1efea;
+  /* 状态色（克制使用，只用于真实错误/成功/等待） */
+  --color-danger: #b3261e;
+  --color-success: #1f6f3f;
+  /* 「未完成 / 已取消」用暖褐，与纸色同族，不抢错误红的语义 */
+  --color-warn: #8a5a12;
 
-  /* 间距（只用这 7 档） */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --space-7: 48px;
+  /* 形状：卡片与控件刻意不同 */
+  --radius-card: 14px;
+  --radius-control: 6px;
+  --radius-pill: 999px;
 
-  /* 圆角 */
-  --radius-chip: 9999px;
-  --radius-button: 10px;
-  --radius-input: 12px;
-  --radius-card: 16px;
-
-  /* 阴影：全站只有一个 */
-  --shadow-subtle: rgba(0, 0, 0, 0.06) 0 1px 2px 0;
+  /* 字体：Inter 负责拉丁与数字，中文字形走系统字体 */
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: var(--font-mono-jb), ui-monospace, SFMono-Regular, Menlo, monospace;
 
   /* 布局 */
-  --page-max-width: 900px;
-  --reading-max-width: 68ch;
-
-  /* 动效 */
-  --duration-fast: 120ms;
-  --duration-base: 300ms;
+  --container-page: 1120px;
 }

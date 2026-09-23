@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * 创建任务面板（4B）：本地文件上传 / B 站链接提交。
+ * 创建任务面板：本地文件上传 / B 站链接提交。
  *
- * 设计要点：
+ * 设计要点（沿用 03 工具的设计语言：近单色 + hairline + 单一强调色）：
  * - 提交前只做**零成本弱校验**（格式、大小、链接像不像），把关仍在后端；
  * - 上传用 XHR 拿真实进度，并且**可以取消**（选错大文件不用干等）；
  * - 文案：能被后端给出的（如不支持格式、超限、非法链接）优先用后端文案；
@@ -15,8 +15,11 @@ import { useCallback, useState } from "react";
 
 import { FileDropZone, validateFile } from "@/components/FileDropZone";
 import { ModeSwitch } from "@/components/ModeSwitch";
-import { ProgressBar } from "@/components/ProgressBar";
 import { ServiceUnavailable } from "@/components/ServiceUnavailable";
+import { Bar } from "@/components/ui/Bar";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useServiceConfig } from "@/features/service-config/useServiceConfig";
 import { ApiError, api } from "@/lib/api/client";
 import { uploadFile, type UploadHandle } from "@/lib/api/upload";
@@ -131,12 +134,14 @@ export function CreateTaskPanel() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {configState.kind === "failed" ? (
         <ServiceUnavailable message={configState.message} onRetry={reload} />
       ) : null}
 
-      <section className="rounded-card border border-hairline bg-raised p-4 shadow-subtle sm:p-5">
+      <Card className="p-7">
+        <Eyebrow className="mb-3">新建任务</Eyebrow>
+
         <ModeSwitch
           value={mode}
           onChange={(next) => {
@@ -151,7 +156,7 @@ export function CreateTaskPanel() {
           ]}
         />
 
-        <div className="mt-4">
+        <div className="mt-5">
           {mode === "file" ? (
             <FileDropZone
               file={file}
@@ -169,7 +174,7 @@ export function CreateTaskPanel() {
             />
           ) : (
             <div>
-              <label htmlFor="url-input" className="text-[14px] text-ink-soft">
+              <label htmlFor="url-input" className="text-[13px] text-muted">
                 B 站视频链接
               </label>
               <input
@@ -184,9 +189,9 @@ export function CreateTaskPanel() {
                   setUrl(event.target.value);
                   setSubmit({ kind: "idle" });
                 }}
-                className="mt-1.5 w-full rounded-input border border-hairline bg-canvas px-3 py-3 text-[15px] text-ink placeholder:text-ink-muted focus:border-accent"
+                className="mt-1.5 h-11 w-full rounded-control border border-line bg-canvas px-3 text-[15px] text-ink placeholder:text-faint focus:border-line-strong"
               />
-              <p className="mt-1.5 text-[13px] leading-relaxed text-ink-muted">
+              <p className="mt-2 text-[13px] leading-relaxed text-muted">
                 支持单个视频链接。多 P 视频请粘贴某一个分集的链接。
                 {maxMediaMinutes && maxMediaMinutes > 0
                   ? ` 单条内容时长上限 ${maxMediaMinutes} 分钟。`
@@ -197,16 +202,20 @@ export function CreateTaskPanel() {
         </div>
 
         {submit.kind === "uploading" ? (
-          <div className="mt-4">
-            <ProgressBar percent={submit.percent} label="上传进度" />
+          <div className="mt-5">
+            <Bar
+              percent={submit.percent}
+              label="上传进度"
+              valueText={`已上传 ${submit.percent}%`}
+            />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-              <p className="tnum text-[13px] text-ink-soft">
+              <p className="font-mono text-[13px] text-muted">
                 {submit.processing ? "正在创建任务…" : `正在上传 ${submit.percent}%`}
               </p>
               <button
                 type="button"
                 onClick={() => handle?.abort()}
-                className="rounded-button border border-hairline-strong px-3 py-1.5 text-[14px] text-ink-soft transition-colors hover:bg-sunken"
+                className="h-8 rounded-control border border-line-strong px-3 text-[13px] text-muted transition-colors hover:bg-sunken hover:text-ink"
               >
                 取消上传
               </button>
@@ -214,37 +223,32 @@ export function CreateTaskPanel() {
           </div>
         ) : null}
 
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <button
-            type="button"
-            onClick={onSubmit}
-            disabled={busy || configState.kind === "failed"}
-            className="rounded-button bg-ink-fill px-4 py-2.5 text-[15px] text-ink-inverse transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {mode === "file" ? "开始提取" : "开始提取"}
-          </button>
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          <Button onClick={onSubmit} disabled={busy || configState.kind === "failed"}>
+            开始提取
+          </Button>
           {submit.kind === "creating" ? (
-            <span className="text-[14px] text-ink-soft">正在创建任务…</span>
+            <span className="text-[13.5px] text-muted">正在创建任务…</span>
           ) : null}
         </div>
 
         {notice ? (
-          <p className="mt-3 rounded-input bg-neutral-status-soft px-3 py-2 text-[14px] text-neutral-status">
+          <p className="mt-4 rounded-control bg-sunken px-3 py-2 text-[13.5px] text-body">
             {notice}
           </p>
         ) : null}
 
         {submit.kind === "error" ? (
-          <div className="mt-3 rounded-input bg-danger-soft px-3 py-2">
+          <div className="mt-4 border-l-2 border-danger pl-3">
             <p className="text-[14px] text-danger">{submit.message}</p>
             {submit.code === "FILE_TOO_LARGE" || submit.code === "INVALID_FILE" ? (
-              <p className="mt-1 text-[13px] text-ink-soft">
+              <p className="mt-1 text-[13px] text-muted">
                 提示：也可以先截取需要转写的片段，再上传。
               </p>
             ) : null}
           </div>
         ) : null}
-      </section>
+      </Card>
     </div>
   );
 }

@@ -1,6 +1,8 @@
 "use client";
 
-/** 模式切换：两个药丸按钮（设计基调 §3 的 Pill Chip）。 */
+import { cn } from "@/lib/utils";
+
+/** 模式切换：药丸标签（激活态用强调色浅底 + 强调色文字，与 03 工具一致）。 */
 export function ModeSwitch<T extends string>({
   value,
   options,
@@ -24,12 +26,12 @@ export function ModeSwitch<T extends string>({
             aria-selected={selected}
             disabled={disabled}
             onClick={() => onChange(option.value)}
-            className={[
-              "rounded-chip px-3 py-2 text-[14px] transition-colors disabled:cursor-not-allowed disabled:opacity-60",
+            className={cn(
+              "rounded-pill px-3.5 py-1.5 text-[13.5px] transition-colors disabled:cursor-not-allowed disabled:opacity-45",
               selected
-                ? "bg-accent text-ink-inverse"
-                : "border border-hairline text-ink-soft hover:bg-raised",
-            ].join(" ")}
+                ? "bg-accent-wash font-semibold text-accent"
+                : "border border-line text-muted hover:bg-sunken hover:text-ink",
+            )}
           >
             {option.label}
           </button>

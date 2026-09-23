@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 任务详情（4C 完整版）。
+ * 任务详情（完整体验版）。
  *
  * 页面由后端状态驱动，七种状态各有明确表现；三件关键事在这里落地：
  * 1. 过程可见：阶段文案 + 进度条 + 逐段追加 + 自动跟随可暂停；
@@ -11,15 +11,27 @@
 import Link from "next/link";
 import { useState } from "react";
 
-import { ProgressBar } from "@/components/ProgressBar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { TranscriptViewer } from "@/components/TranscriptViewer";
+import { Bar } from "@/components/ui/Bar";
+import { Button, buttonClass } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useServiceConfig } from "@/features/service-config/useServiceConfig";
 import { useTaskPolling } from "@/features/task-detail/useTaskPolling";
 import { formatDuration, formatPercent } from "@/lib/format";
 import { isTerminal } from "@/lib/api/schemas";
 
 const FALLBACK_INTERVAL_SECONDS = 2;
+
+function Fact({ label, value, mono = true }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <dt className="text-[13px] text-muted">{label}</dt>
+      <dd className={mono ? "font-mono text-[13px] text-body" : "text-[13px] text-body"}>{value}</dd>
+    </div>
+  );
+}
 
 export function TaskDetail({ taskId }: { taskId: string }) {
   const { state: configState } = useServiceConfig();
@@ -47,29 +59,23 @@ export function TaskDetail({ taskId }: { taskId: string }) {
 
   if (missing) {
     return (
-      <section className="rounded-card border border-hairline bg-raised p-4 shadow-subtle sm:p-5">
-        <h2 className="text-[20px] font-medium text-ink">没有找到这个任务</h2>
-        <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">
-          可能是地址抄错了，或者这个任务的记录已经被清理。
-          任务记录默认会一直保留，你可以从首页重新发起任务。
+      <Card className="p-7">
+        <Eyebrow className="mb-2">未找到</Eyebrow>
+        <h2 className="text-[22px] font-semibold tracking-[-0.01em]">没有找到这个任务</h2>
+        <p className="mt-2 max-w-[52ch] text-[14.5px] leading-relaxed text-muted">
+          可能是地址抄错了，或者这个任务的记录已经被清理。任务记录默认会一直保留，
+          你可以从首页重新发起任务。
         </p>
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Link
-            href="/"
-            className="rounded-button bg-ink-fill px-4 py-2.5 text-[15px] text-ink-inverse transition-opacity hover:opacity-90"
-          >
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <Link href="/" className={buttonClass("primary")}>
             返回首页，发起新任务
           </Link>
-          <button
-            type="button"
-            onClick={refresh}
-            className="rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-sunken"
-          >
+          <Button variant="ghost" onClick={refresh} className="h-10 text-[13.5px]">
             重新检查
-          </button>
+          </Button>
         </div>
-        <p className="mt-4 text-[13px] text-ink-muted">任务编号：{taskId}</p>
-      </section>
+        <p className="mt-5 font-mono text-[12px] text-faint">任务编号：{taskId}</p>
+      </Card>
     );
   }
 
@@ -88,18 +94,18 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         : status.stage_message;
 
   return (
-    <section className="rounded-card border border-hairline bg-raised p-4 shadow-subtle sm:p-5">
+    <Card className="p-7">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <h2 aria-live="polite" className="text-[20px] font-medium leading-snug text-ink">
+        <h1 aria-live="polite" className="text-[22px] font-semibold tracking-[-0.01em]">
           {heading}
-        </h2>
+        </h1>
         {status ? <StatusBadge status={status.status} /> : null}
       </div>
 
       {status ? (
         <>
-          <div className="mt-4">
-            <ProgressBar
+          <div className="mt-5">
+            <Bar
               percent={status.progress_percent}
               label="转写进度"
               valueText={
@@ -108,7 +114,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
                   : undefined
               }
             />
-            <p className="tnum mt-2 text-[13px] leading-relaxed text-ink-soft">
+            <p className="mt-2 font-mono text-[12.5px] text-muted">
               {status.media_duration_seconds
                 ? `已转写 ${formatDuration(status.transcribed_seconds)} / 共 ${formatDuration(status.media_duration_seconds)}`
                 : "正在准备音频"}
@@ -117,82 +123,56 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             </p>
           </div>
 
-          <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 text-[13px] text-ink-soft sm:grid-cols-2">
-            <div className="flex gap-2">
-              <dt>处理方式</dt>
-              <dd className="text-ink">{status.processing_method_label}</dd>
-            </div>
+          <dl className="mt-4 grid grid-cols-1 gap-x-8 gap-y-1.5 sm:grid-cols-2">
+            <Fact label="处理方式" value={status.processing_method_label} mono={false} />
             {status.media_duration_seconds ? (
-              <div className="flex gap-2">
-                <dt>内容时长</dt>
-                <dd className="tnum text-ink">{formatDuration(status.media_duration_seconds)}</dd>
-              </div>
+              <Fact label="内容时长" value={formatDuration(status.media_duration_seconds)} />
             ) : null}
             {running && status.estimated_remaining_seconds ? (
-              <div className="flex gap-2">
-                <dt>预计还需约</dt>
-                <dd className="tnum text-ink">
-                  {formatDuration(status.estimated_remaining_seconds)}
-                </dd>
-              </div>
+              <Fact label="预计还需约" value={formatDuration(status.estimated_remaining_seconds)} />
             ) : null}
             {isTerminal(status.status) ? (
-              <div className="flex gap-2">
-                <dt>总耗时</dt>
-                <dd className="tnum text-ink">{formatDuration(status.elapsed_seconds)}</dd>
-              </div>
+              <Fact label="总耗时" value={formatDuration(status.elapsed_seconds)} />
             ) : null}
           </dl>
         </>
       ) : null}
 
       {notice ? (
-        <p className="mt-3 rounded-input bg-warning-soft px-3 py-2 text-[14px] text-warning">
-          {notice}
-        </p>
+        <p className="mt-4 border-l-2 border-line-strong pl-3 text-[13.5px] text-muted">{notice}</p>
       ) : null}
 
       {error ? (
-        <div className="mt-3 rounded-input bg-danger-soft px-3 py-2">
+        <div className="mt-4 border-l-2 border-danger pl-3">
           <p className="text-[14px] text-danger">{error}</p>
-          <button
-            type="button"
-            onClick={refresh}
-            className="mt-2 rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-canvas"
-          >
+          <Button variant="ghost" onClick={refresh} className="mt-3 h-9 text-[13.5px]">
             重新加载
-          </button>
+          </Button>
         </div>
       ) : null}
 
       {status?.status === "failed" ? (
-        <div className="mt-3 rounded-input bg-danger-soft px-3 py-3">
-          <p className="text-[15px] text-danger">
+        <div className="mt-4 border-l-2 border-danger pl-3">
+          <p className="text-[15px] font-medium text-danger">
             {status.error?.message ?? "任务未完成，请重试"}
           </p>
-          <p className="mt-1 text-[14px] leading-relaxed text-ink-soft">
+          <p className="mt-1 text-[13.5px] leading-relaxed text-muted">
             {hasContent
               ? "已生成的内容保留在下方，但没有生成可下载文件。"
               : "没有生成任何内容，可以调整后重新发起任务。"}
           </p>
-          <Link
-            href="/"
-            className="mt-3 inline-block rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-canvas"
-          >
+          <Link href="/" className={buttonClass("ghost", "mt-3 h-9 text-[13.5px]")}>
             重新发起任务
           </Link>
         </div>
       ) : null}
 
       {status?.status === "cancelled" ? (
-        <div className="mt-3 rounded-input bg-warning-soft px-3 py-3">
-          <p className="text-[14px] leading-relaxed text-warning">
+        <div className="mt-4 border-l-2 border-warn pl-3">
+          <p className="text-[13.5px] leading-relaxed text-body">
             已生成的内容保留在下方，但没有生成可下载文件。需要完整逐字稿请重新发起任务。
           </p>
-          <Link
-            href="/"
-            className="mt-3 inline-block rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-canvas"
-          >
+          <Link href="/" className={buttonClass("ghost", "mt-3 h-9 text-[13.5px]")}>
             重新发起任务
           </Link>
         </div>
@@ -208,46 +188,49 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             <button
               type="button"
               onClick={() => void copyTranscript()}
-              className="rounded-button border border-hairline-strong px-3 py-2 text-[13px] text-ink transition-colors hover:bg-sunken"
+              className="h-9 rounded-control border border-line-strong px-3 text-[13px] text-ink transition-colors hover:bg-sunken"
             >
-              {copyState === "ok" ? "已复制" : copyState === "fail" ? "复制失败，请手动选择" : "复制全文"}
+              {copyState === "ok"
+                ? "已复制"
+                : copyState === "fail"
+                  ? "复制失败，请手动选择"
+                  : "复制全文"}
             </button>
           ) : null
         }
       />
 
       {running ? (
-        <div className="mt-4">
+        <div className="mt-5">
           {confirmingCancel ? (
-            <div className="flex flex-wrap items-center gap-3 rounded-input bg-sunken px-3 py-3">
-              <p className="text-[14px] text-ink">
+            <div className="flex flex-wrap items-center gap-3 rounded-control bg-sunken px-4 py-3">
+              <p className="text-[13.5px]">
                 确定取消吗？已生成的内容会保留，但不会生成可下载文件。
               </p>
-              <button
-                type="button"
+              <Button
                 onClick={() => {
                   setConfirmingCancel(false);
                   void cancel();
                 }}
                 disabled={cancelling}
-                className="rounded-button bg-ink-fill px-3 py-2 text-[14px] text-ink-inverse transition-opacity hover:opacity-90 disabled:opacity-50"
+                className="h-9 text-[13.5px]"
               >
                 {cancelling ? "正在取消…" : "确认取消"}
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                variant="ghost"
                 onClick={() => setConfirmingCancel(false)}
-                className="rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink transition-colors hover:bg-canvas"
+                className="h-9 text-[13.5px]"
               >
                 继续等待
-              </button>
+              </Button>
             </div>
           ) : (
             <button
               type="button"
               onClick={() => setConfirmingCancel(true)}
               disabled={!status?.cancellable}
-              className="rounded-button border border-danger px-3 py-2 text-[14px] text-danger transition-colors hover:bg-danger-soft disabled:cursor-not-allowed disabled:opacity-50"
+              className="h-9 rounded-control border border-line-strong px-3.5 text-[13.5px] text-muted transition-colors hover:bg-sunken hover:text-danger disabled:cursor-not-allowed disabled:opacity-45"
             >
               取消任务
             </button>
@@ -256,29 +239,23 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       ) : null}
 
       {status?.status === "succeeded" && status.artifacts.markdown ? (
-        <div className="mt-4 flex flex-wrap gap-3">
-          <a
-            href={status.artifacts.markdown}
-            className="rounded-button bg-ink-fill px-4 py-2.5 text-[15px] text-ink-inverse transition-opacity hover:opacity-90"
-          >
+        <div className="mt-6 flex flex-wrap gap-3 border-t border-line pt-5">
+          <a href={status.artifacts.markdown} className={buttonClass("primary")}>
             下载 Markdown
           </a>
           {status.artifacts.txt ? (
-            <a
-              href={status.artifacts.txt}
-              className="rounded-button border border-hairline-strong px-4 py-2.5 text-[15px] text-ink transition-colors hover:bg-sunken"
-            >
+            <a href={status.artifacts.txt} className={buttonClass("ghost")}>
               下载 TXT
             </a>
           ) : null}
         </div>
       ) : null}
 
-      <p className="mt-5 text-[13px] text-ink-muted">
+      <p className="mt-6 text-[13px] text-muted">
         <Link href="/" className="underline underline-offset-2 hover:text-ink">
           返回首页，发起新任务
         </Link>
       </p>
-    </section>
+    </Card>
   );
 }

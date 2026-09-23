@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 
 import { ALLOWED_EXTENSIONS_LABEL, formatFileSize, isSupportedFilename } from "@/lib/constants";
+import { cn } from "@/lib/utils";
 
 export type FileSelectionError = { message: string } | null;
 
@@ -48,10 +49,10 @@ export function FileDropZone({
       />
 
       {file ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-input border border-hairline bg-raised px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-control border border-line bg-canvas px-4 py-3">
           <div className="min-w-0">
-            <p className="truncate text-[15px] text-ink">{file.name}</p>
-            <p className="tnum mt-0.5 text-[13px] text-ink-muted">{formatFileSize(file.size)}</p>
+            <p className="truncate text-[15px] font-medium">{file.name}</p>
+            <p className="mt-0.5 font-mono text-[13px] text-muted">{formatFileSize(file.size)}</p>
           </div>
           <button
             type="button"
@@ -60,7 +61,7 @@ export function FileDropZone({
               if (inputRef.current) inputRef.current.value = "";
             }}
             disabled={disabled}
-            className="rounded-button border border-hairline-strong px-3 py-2 text-[14px] text-ink-soft transition-colors hover:bg-sunken disabled:opacity-50"
+            className="h-9 rounded-control border border-line-strong px-3 text-[13.5px] text-ink transition-colors hover:bg-sunken disabled:opacity-45"
           >
             重新选择
           </button>
@@ -78,14 +79,14 @@ export function FileDropZone({
             setDragging(false);
             if (!disabled) handleFiles(event.dataTransfer.files);
           }}
-          className={[
-            "flex cursor-pointer flex-col items-center justify-center rounded-input border border-dashed px-4 py-8 text-center transition-colors",
-            dragging ? "border-accent bg-accent-soft" : "border-hairline-strong hover:bg-raised",
-            disabled ? "cursor-not-allowed opacity-60" : "",
-          ].join(" ")}
+          className={cn(
+            "flex cursor-pointer flex-col items-center justify-center rounded-card border border-dashed px-4 py-10 text-center transition-colors",
+            dragging ? "border-accent bg-accent-wash" : "border-line-strong hover:bg-canvas",
+            disabled && "cursor-not-allowed opacity-60",
+          )}
         >
-          <span className="text-[15px] text-ink">点击选择文件，或把文件拖到这里</span>
-          <span className="mt-1 text-[13px] leading-relaxed text-ink-muted">
+          <span className="text-[15px] font-medium">点击选择文件，或把文件拖到这里</span>
+          <span className="mt-1.5 text-[13px] leading-relaxed text-muted">
             支持 {ALLOWED_EXTENSIONS_LABEL}
             {maxSizeMb ? `，单个文件不超过 ${maxSizeMb} MB` : ""}
           </span>
