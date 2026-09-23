@@ -1,0 +1,81 @@
+@import "tailwindcss";
+@import "../styles/tokens.css";
+
+/* 把设计变量暴露成 Tailwind 语义类名：
+   bg-canvas / bg-raised / text-ink / border-hairline / rounded-card … */
+@theme inline {
+  --color-canvas: var(--surface-canvas);
+  --color-raised: var(--surface-raised);
+  --color-sunken: var(--surface-sunken);
+  --color-ink-fill: var(--surface-ink);
+
+  --color-ink: var(--text-primary);
+  --color-ink-soft: var(--text-secondary);
+  --color-ink-muted: var(--text-muted);
+  --color-ink-inverse: var(--text-inverse);
+
+  --color-hairline: var(--border-hairline);
+  --color-hairline-strong: var(--border-strong);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-success: var(--status-success-text);
+  --color-success-soft: var(--status-success-bg);
+  --color-warning: var(--status-warning-text);
+  --color-warning-soft: var(--status-warning-bg);
+  --color-danger: var(--status-danger-text);
+  --color-danger-soft: var(--status-danger-bg);
+  --color-neutral-status: var(--status-neutral-text);
+  --color-neutral-status-soft: var(--status-neutral-bg);
+
+  --radius-chip: var(--radius-chip);
+  --radius-button: var(--radius-button);
+  --radius-input: var(--radius-input);
+  --radius-card: var(--radius-card);
+
+  --shadow-subtle: var(--shadow-subtle);
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 数字（进度、时长、片段数）用等宽数字，避免跳动 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 逐字稿时间戳：等宽、不换行 */
+.timestamp {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 本阶段只保留两类动效，并尊重用户的减少动效设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 统一聚焦环：只用一个强调色外环，键盘用户可见 */
+:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}

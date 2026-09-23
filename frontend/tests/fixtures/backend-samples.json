@@ -1,0 +1,93 @@
+{
+  "config": {
+    "max_upload_mb": 2048,
+    "task_poll_interval_seconds": 2,
+    "max_media_minutes": 360
+  },
+  "status": {
+    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "status": "succeeded",
+    "stage_message": "逐字稿已生成",
+    "source_type": "local_file",
+    "platform": "local",
+    "source_url": null,
+    "extract_method": "speech_to_text",
+    "subtitle_kind": null,
+    "processing_method_label": "语音转写",
+    "created_at": "2026-09-23T13:07:24.544561+08:00",
+    "updated_at": "2026-09-23T13:32:14.931550+08:00",
+    "elapsed_seconds": 1490.386989,
+    "media_duration_seconds": 3773.54475,
+    "estimated_remaining_seconds": null,
+    "segment_count": 2007,
+    "transcribed_seconds": 3771.13,
+    "progress_percent": 100.0,
+    "partial_result_available": false,
+    "cancellable": false,
+    "error": null,
+    "artifacts": {
+      "markdown": "/api/v1/tasks/0c21db42-508f-4bf4-815e-f998942c2c21/download/markdown",
+      "txt": "/api/v1/tasks/0c21db42-508f-4bf4-815e-f998942c2c21/download/txt"
+    }
+  },
+  "segments": {
+    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "status": "succeeded",
+    "partial": false,
+    "total": 2007,
+    "next_after": 3,
+    "has_more": true,
+    "segments": [
+      {
+        "index": 0,
+        "start": 0.0,
+        "end": 2.24,
+        "text": "貝多芬每天清晨的第一件事"
+      },
+      {
+        "index": 1,
+        "start": 2.24,
+        "end": 5.36,
+        "text": "是強迫症一樣在捉錢數豆子"
+      },
+      {
+        "index": 2,
+        "start": 5.36,
+        "end": 9.48,
+        "text": "少一顆或多一顆都要憤怒地倒掉重來"
+      }
+    ]
+  },
+  "result": {
+    "schema_version": 2,
+    "task_id": "0c21db42-508f-4bf4-815e-f998942c2c21",
+    "source_type": "local_file",
+    "platform": "local",
+    "source_url": null,
+    "original_filename": "case1-1hour.wav",
+    "media_type": "audio",
+    "processing_method": "speech_to_text_local",
+    "subtitle_kind": null,
+    "language": "zh",
+    "duration_seconds": 3773.54475,
+    "text": "貝多芬每天清晨的第一件事\n是強迫症一樣在捉錢數豆子\n少一顆或多一顆都要憤怒地倒掉重來\n他的每一杯咖啡必須由不多不少正好60顆豆子組成\n只為了精準捕獲\n那個讓他保持抗憤與清醒的微觀分子\n但在大自然原本的劇本裡\n這根本不是什麼提神銀品\n而是一套兇猛的武器\n故事要從東非的高地與林說起\n在殘酷的自然界裡\n咖啡樹為了不被吃絕\n在嫩葉和種子裡合成了高濃度的咖啡因\n對昆蟲來說\n咖啡因是致命的神經毒素\n一旦肯了\n",
+    "segments": [
+      {
+        "start": 0.0,
+        "end": 2.24,
+        "text": "貝多芬每天清晨的第一件事"
+      },
+      {
+        "start": 2.24,
+        "end": 5.36,
+        "text": "是強迫症一樣在捉錢數豆子"
+      },
+      {
+        "start": 5.36,
+        "end": 9.48,
+        "text": "少一顆或多一顆都要憤怒地倒掉重來"
+      }
+    ],
+    "generated_at": "2026-09-23T13:32:14.919190+08:00"
+  }
+}
