@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -26,7 +28,12 @@ from backend.app.schemas.task import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
 ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
+    # 说明：可续跑的任务由 ``requeue_for_resume`` 显式回到 pending，
+    # 不走这张表（状态机本身不允许 transcribing → validating）。
     TaskStatus.PENDING: {TaskStatus.VALIDATING, TaskStatus.CHECKING_SUBTITLE, TaskStatus.FAILED},
     TaskStatus.VALIDATING: {
         TaskStatus.EXTRACTING_AUDIO,
@@ -113,9 +120,16 @@ class TaskService:
         with self._lock:
             record = self.get(task_id)
             if new_status not in ALLOWED_TRANSITIONS[record.status]:
+                # 状态名（transcribing 等）是内部术语，不能出现在用户可见文案里。
+                logger.warning(
+                    "invalid_task_transition task_id=%s from=%s to=%s",
+                    task_id,
+                    record.status.value,
+                    new_status.value,
+                )
                 raise AppError(
                     "INVALID_TASK_TRANSITION",
-                    f"任务不能从 {record.status.value} 进入 {new_status.value}",
+                    "任务状态异常，请重新发起任务",
                     status_code=500,
                 )
             record.status = new_status
@@ -168,6 +182,27 @@ class TaskService:
         """标记这是一份保留的部分结果（失败时已生成的片段不丢弃）。"""
         return self._update(task_id, partial_result_available=available)
 
+    def requeue_for_resume(self, task_id: str) -> TaskRecord:
+        """把有进度的任务放回队列，交给处理器从断点续写（阶段 3B）。
+
+        为什么显式回到 ``pending``：状态机不允许 ``transcribing → validating``，
+        而续跑确实需要重新走校验 / 下载 / 提取这些前置步骤（真正省下来的是转写本身），
+        因此回到链路起点重新开始，同时**保留已落盘的片段与进度**。
+        """
+        with self._lock:
+            record = self.get(task_id)
+            record.status = TaskStatus.PENDING
+            record.progress_stage = TaskStatus.PENDING
+            record.stage_message = None
+            record.updated_at = datetime.now().astimezone()
+            self._write(record)
+            return record
+
+    def increment_resumed_count(self, task_id: str) -> TaskRecord:
+        """记录本任务被续写的次数（排查异常反复续写用）。"""
+        record = self.get(task_id)
+        return self._update(task_id, resumed_count=record.resumed_count + 1)
+
     def set_extraction(
         self,
         task_id: str,
@@ -209,22 +244,38 @@ class TaskService:
             self._write(record)
             return record
 
-    def recover_incomplete(self) -> int:
-        recovered = 0
+    def recover_incomplete(
+        self, *, is_resumable: Callable[[TaskRecord], bool] | None = None
+    ) -> tuple[int, list[TaskRecord]]:
+        """服务重启后的收尾。
+
+        返回 ``(标记为中断的任务数, 需要重新入队续跑的任务)``。
+
+        - ``is_resumable``：由调用方判断“这个任务还能不能接着跑”（只有它知道
+          磁盘上有没有已落盘片段、音频是否可复用）。缺省为 ``None``，表示不做
+          续跑，行为与阶段 1/2 完全一致：所有非终态任务都标记 ``TASK_INTERRUPTED``；
+        - 被判定可续跑的任务**保持原状态**，不改写为失败，由调用方重新入队。
+        """
+        interrupted = 0
+        resumable: list[TaskRecord] = []
         for path in self.tasks_dir.glob("*.json"):
             try:
                 record = self.get(path.stem)
             except AppError:
                 continue
-            if record.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
-                self.fail(
-                    record.task_id,
-                    code="TASK_INTERRUPTED",
-                    message="服务曾中断，请重新上传文件发起任务",
-                    internal_type="ProcessRestart",
-                )
-                recovered += 1
-        return recovered
+            if record.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+                continue
+            if is_resumable is not None and is_resumable(record):
+                resumable.append(record)
+                continue
+            self.fail(
+                record.task_id,
+                code="TASK_INTERRUPTED",
+                message="服务曾中断，请重新上传文件发起任务",
+                internal_type="ProcessRestart",
+            )
+            interrupted += 1
+        return interrupted, resumable
 
     # ------------------------------------------------------------------ 内部
 

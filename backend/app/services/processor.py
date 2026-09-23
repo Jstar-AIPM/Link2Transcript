@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -9,6 +10,7 @@ from time import perf_counter
 from backend.app.core.errors import AppError
 from backend.app.core.filenames import sanitize_filename
 from backend.app.core.messages import (
+    RESUMING_MESSAGE,
     TRANSCRIPTION_STAGE_MESSAGES,
     file_too_long_message,
     format_duration,
@@ -40,6 +42,9 @@ logger = logging.getLogger(__name__)
 # 实际音频短于声明时长的这个比例时，判定为不完整（防意外截断的通用安全网）。
 MIN_AUDIO_COVERAGE_RATIO = 0.9
 
+# 断点续写用的临时音频文件名（放在该任务的中间音频目录下）
+RESUME_AUDIO_NAME = "resume.wav"
+
 # “没有人声”类错误的用户文案：同一错误码在不同来源下说人话。
 SPEECH_ERROR_MESSAGES: dict[str, dict[SourceType, str]] = {
     "SILENT_AUDIO": {
@@ -62,6 +67,16 @@ def _rethrow_with_source_wording(exc: AppError, source_type: SourceType) -> None
         raise AppError(exc.code, message) from exc
 
 
+@dataclass(frozen=True)
+class _ResumeContext:
+    """续写准备结果：已落盘片段、时间偏移、实际要转写的音频、是否真在续写。"""
+
+    existing_segments: list[TranscriptSegment]
+    start_offset: float
+    audio_path: Path
+    resumed: bool
+
+
 class _TranscriptionProgress:
     """转写过程的“即时落盘 + 节流上报”（阶段 3）。
 
@@ -79,29 +94,39 @@ class _TranscriptionProgress:
         segment_store: SegmentStore,
         task_id: str,
         interval_seconds: float = 1.0,
-        initial_segment_count: int = 0,
-        initial_transcribed_seconds: float = 0.0,
+        existing_segments: list[TranscriptSegment] | None = None,
     ) -> None:
         self.task_service = task_service
         self.segment_store = segment_store
         self.task_id = task_id
         self.interval_seconds = max(0.0, interval_seconds)
-        self.segment_count = max(0, int(initial_segment_count))
-        self.transcribed_seconds = max(0.0, float(initial_transcribed_seconds))
+        # 已落盘片段（续写时为上次中断前的内容）+ 本次新产出的片段，
+        # 两者拼在一起才是完整结果；按时间戳去重，不做文本比对。
+        self.collected: list[TranscriptSegment] = list(existing_segments or [])
+        # 检查点 = 已落盘片段的最大结束时间；续写时它就是去重边界。
+        self.checkpoint = max((s.end for s in self.collected), default=0.0)
+        self.resumed = bool(self.collected)
+        self.segment_count = len(self.collected)
+        self.transcribed_seconds = self.checkpoint
         # 首个片段立即写回，用户不必等到第一个节流周期结束才看到进度。
         self._awaiting_first_segment = True
         self._last_persist_at = perf_counter()
 
     def on_stage(self, code: str) -> None:
-        message = TRANSCRIPTION_STAGE_MESSAGES.get(code)
+        if self.resumed and code == "transcribing":
+            message = RESUMING_MESSAGE
+        else:
+            message = TRANSCRIPTION_STAGE_MESSAGES.get(code)
         if message is not None:
             self.task_service.set_stage_message(self.task_id, message)
 
     def on_segment(self, segment: TranscriptSegment) -> None:
-        index = self.segment_store.append(self.task_id, segment)
-        if index is None:
+        # 重叠区：断点前的片段已经落盘过，直接丢弃（时间戳去重）。
+        if self.resumed and segment.end <= self.checkpoint:
             return
-        self.segment_count = max(self.segment_count, index + 1)
+        self.segment_store.append(self.task_id, segment)
+        self.collected.append(segment)
+        self.segment_count = len(self.collected)
         self.transcribed_seconds = max(self.transcribed_seconds, float(segment.end))
         throttled = perf_counter() - self._last_persist_at >= self.interval_seconds
         if self._awaiting_first_segment or throttled:
@@ -136,6 +161,7 @@ class TaskProcessor:
         max_media_minutes: int = 180,
         max_workers: int = 1,
         progress_persist_interval_seconds: float = 1.0,
+        resume_overlap_seconds: float = 2.0,
     ) -> None:
         self.task_service = task_service
         self.media_service = media_service
@@ -150,6 +176,7 @@ class TaskProcessor:
         self.max_media_minutes = max_media_minutes
         self.segment_store = segment_store
         self.progress_persist_interval_seconds = progress_persist_interval_seconds
+        self.resume_overlap_seconds = max(0.0, resume_overlap_seconds)
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="transcript")
 
     def submit(self, task_id: str) -> None:
@@ -318,18 +345,23 @@ class TaskProcessor:
         task_started: float,
     ) -> None:
         stage_started = perf_counter()
-        self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
+        record = self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
+        duration = record.media_duration_seconds or fallback_duration
+        resume = self._resume_context(task_id, audio_path, duration=duration)
         progress = _TranscriptionProgress(
             task_service=self.task_service,
             segment_store=self.segment_store,
             task_id=task_id,
             interval_seconds=self.progress_persist_interval_seconds,
+            existing_segments=resume.existing_segments,
         )
         try:
             transcription = self.transcription_service.transcribe(
-                audio_path,
+                resume.audio_path,
                 on_stage=progress.on_stage,
                 on_segment=progress.on_segment,
+                start_offset=resume.start_offset,
+                allow_empty_result=resume.resumed,
             )
         except AppError as exc:
             # 失败也要把已完成的进度写回：部分结果不丢，用户能看到已经转出来的内容。
@@ -344,6 +376,9 @@ class TaskProcessor:
             processing_method=processing_method,
             extract_method=ExtractMethod.SPEECH_TO_TEXT,
         )
+        # 结果以“落盘片段 + 本次新产出片段”为准（续写时两者拼接），
+        # 而不是本次转写服务的返回值，否则续写会丢掉中断前的内容。
+        segments = progress.collected
         result = TranscriptResult(
             task_id=task_id,
             source_type=record.source_type,
@@ -354,11 +389,55 @@ class TaskProcessor:
             processing_method=processing_method,
             language=transcription.language,
             duration_seconds=transcription.duration_seconds or fallback_duration,
-            text=transcription.text,
-            segments=transcription.segments,
+            text="\n".join(segment.text for segment in segments).strip(),
+            segments=segments,
             generated_at=datetime.now().astimezone(),
         )
         self._export_and_succeed(task_id, result, task_started)
+
+    # ------------------------------------------------------------ 断点续写（3B）
+
+    def _resume_context(
+        self, task_id: str, audio_path: Path, *, duration: float | None
+    ) -> _ResumeContext:
+        """判断能不能接着上次的断点跑，并准备好续写用的音频。
+
+        检查点 = 已落盘片段的最大结束时间（不额外维护检查点文件，避免两个数据源）。
+        从 ``检查点 - 重叠秒数`` 处截取音频，重叠区逐片段丢弃，避免断点正好
+        落在词中间导致开头丢字。
+        """
+        existing = [
+            stored.to_segment() for stored in self.segment_store.read_all(task_id)
+        ]
+        checkpoint = max((segment.end for segment in existing), default=0.0)
+        if checkpoint <= 0:
+            return _ResumeContext(existing, 0.0, audio_path, False)
+
+        start = max(0.0, checkpoint - self.resume_overlap_seconds)
+        if duration and duration > 0:
+            start = min(start, max(0.0, duration - self.resume_overlap_seconds))
+        try:
+            sliced = self.media_service.slice_audio(
+                audio_path, self.audio_dir / task_id / RESUME_AUDIO_NAME, start
+            )
+        except AppError:
+            # 续写准备失败不应让任务彻底卡死：退回完整重跑，并清掉旧片段避免重复。
+            logger.warning(
+                "resume_slice_failed task_id=%s checkpoint=%.3f", task_id, checkpoint, exc_info=True
+            )
+            self.segment_store.reset(task_id)
+            return _ResumeContext([], 0.0, audio_path, False)
+
+        self.task_service.increment_resumed_count(task_id)
+        self.task_service.set_stage_message(task_id, RESUMING_MESSAGE)
+        logger.info(
+            "task_resuming task_id=%s checkpoint=%.3f start=%.3f segments=%d",
+            task_id,
+            checkpoint,
+            start,
+            len(existing),
+        )
+        return _ResumeContext(existing, start, sliced, True)
 
     def _export_and_succeed(self, task_id: str, result: TranscriptResult, task_started: float) -> None:
         stage_started = perf_counter()
@@ -411,9 +490,20 @@ class TaskProcessor:
 
         部分结果不生成 ``transcript.md`` / ``txt`` / ``result.json``：保持
         “成功产物才可下载”的既有语义，避免半成品被当成完整逐字稿。
+
+        同时把进度字段与磁盘上的片段对齐：进度是按秒节流写回的，最后由强杀导致的
+        中断可能落后于实际落盘量，而界面上的“已生成 N 段”应该与用户能读到的内容一致。
+        （磁盘才是权威数据源）
         """
         try:
-            if self.segment_store.has_content(task_id):
-                self.task_service.mark_partial_result(task_id, available=True)
+            stored = self.segment_store.read_all(task_id)
+            if not stored:
+                return
+            self.task_service.mark_partial_result(task_id, available=True)
+            self.task_service.set_progress(
+                task_id,
+                segment_count=len(stored),
+                transcribed_seconds=max(segment.end for segment in stored),
+            )
         except Exception:  # noqa: BLE001 - 标记失败不应掩盖真正的失败原因
             logger.warning("partial_result_mark_failed task_id=%s", task_id, exc_info=True)

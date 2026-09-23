@@ -92,6 +92,40 @@ class MediaService:
             "pcm_s16le",
             str(destination),
         ]
+        self._run_ffmpeg(command, destination, "未能从视频中提取音频", "AUDIO_EXTRACTION_FAILED")
+        return destination
+
+    def slice_audio(self, source: Path, destination: Path, start_seconds: float) -> Path:
+        """从 ``start_seconds`` 处截取到结尾，用于断点续写（阶段 3B）。
+
+        ``-ss`` 放在 ``-i`` 之前：走快速定位，长音频不需要从头解码。
+        """
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        command = [
+            str(self._ffmpeg_executable()),
+            "-nostdin",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            f"{max(0.0, start_seconds):.3f}",
+            "-i",
+            str(source),
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
+            str(destination),
+        ]
+        self._run_ffmpeg(command, destination, "未能续写已中断的任务", "AUDIO_SLICE_FAILED")
+        return destination
+
+    def _run_ffmpeg(
+        self, command: list[str], destination: Path, message: str, code: str
+    ) -> None:
         try:
             completed = subprocess.run(
                 command,
@@ -101,7 +135,6 @@ class MediaService:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AppError("AUDIO_EXTRACTION_FAILED", "未能从视频中提取音频") from exc
+            raise AppError(code, message) from exc
         if completed.returncode != 0 or not destination.is_file() or destination.stat().st_size == 0:
-            raise AppError("AUDIO_EXTRACTION_FAILED", "未能从视频中提取音频")
-        return destination
+            raise AppError(code, message)

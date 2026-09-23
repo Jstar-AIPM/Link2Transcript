@@ -144,3 +144,23 @@ def test_empty_text_raises_empty_transcript():
     with _pytest.raises(_AppError) as exc_info:
         service.transcribe(Path("unused.wav"))
     assert exc_info.value.code == "EMPTY_TRANSCRIPT"
+
+
+def test_resume_mode_tolerates_silent_or_empty_tail():
+    """续写片段的尾部可能全是静音："没有新片段"不是失败（阶段 3B）。"""
+    info = _NS(duration=10.0, duration_after_vad=0.0, language="zh")
+
+    class _Model:
+        def transcribe(self, path, **kwargs):
+            return iter([]), info
+
+    service = TranscriptionService("tiny", "cpu", "int8")
+    service._model = _Model()
+
+    result = service.transcribe(Path("unused.wav"), allow_empty_result=True)
+    assert result.segments == [] and result.text == ""
+
+    # 同样的输入，非续写模式仍按严格行为报错
+    with _pytest.raises(_AppError) as exc_info:
+        service.transcribe(Path("unused.wav"))
+    assert exc_info.value.code == "SILENT_AUDIO"

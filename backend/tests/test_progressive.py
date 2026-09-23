@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from backend.app.services.transcription_service import Transcription
 
 from backend.tests.test_processor import (
     FakeMediaService,
+    FailingSliceMediaService,
     build_processor,
     create_local_task,
 )
@@ -217,6 +219,32 @@ def test_failure_without_any_segment_is_not_a_partial_result(settings):
     assert record.status == TaskStatus.FAILED
     assert record.partial_result_available is False
     assert store.count(task_id) == 0
+
+
+def test_failure_reconciles_progress_with_disk(settings, user_copy_checker):
+    """失败时把记录里的进度与磁盘对齐：界面上“已生成 N 段”必须等于用户真能读到的内容。
+
+    进度写回是按秒节流的，所以被强杀/异常中断时记录会落后于磁盘。
+    """
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    store = SegmentStore(settings.outputs_dir)
+    for segment in EXISTING:
+        store.append(task_id, segment)
+    # 模拟“上一次运行停在这里”：状态已在 transcribing，但记录里的进度还是 0
+    tasks.transition(task_id, TaskStatus.VALIDATING)
+    tasks.transition(task_id, TaskStatus.TRANSCRIBING)
+
+    processor = build_processor(settings, segment_store=store)
+    processor.process(task_id)
+    processor.shutdown()
+
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.partial_result_available is True
+    assert record.segment_count == 2
+    assert record.transcribed_seconds == 5.0
+    assert record.error is not None
+    user_copy_checker(record.error.message)
 
 
 # ---------------------------------------------------------------------------
@@ -412,3 +440,294 @@ def test_progress_percent_is_capped_in_progress_and_rounds_on_success(settings):
     record = TaskRecord(status=TaskStatus.SUCCEEDED, media_duration_seconds=100.0,
                         transcribed_seconds=88.0, **base)
     assert _progress_percent(record) == 100.0
+
+
+# ---------------------------------------------------------------------------
+# 阶段 3B：断点续写 + 启动自动续跑
+# ---------------------------------------------------------------------------
+
+
+class ResumingTranscriptionService:
+    """续写模式：断言收到的偏移 / 容错开关，并产出含重叠区的片段。
+
+    ``new_segments`` 里的时间戳是**全局时间轴**（真实服务在 ``start_offset``
+    下会返回偏移后的时间戳）。重叠区那一条（end <= 检查点）必须被丢弃。
+    """
+
+    def __init__(
+        self,
+        *,
+        tasks: TaskService,
+        task_id: str,
+        new_segments: list[TranscriptSegment] | None = None,
+    ) -> None:
+        self.tasks = tasks
+        self.task_id = task_id
+        self.new_segments = new_segments or []
+        self.start_offset: float | None = None
+        self.allow_empty_result: bool | None = None
+        self.audio_path: Path | None = None
+        self.stage_messages: list[str | None] = []
+
+    def transcribe(
+        self,
+        audio_path: Path,
+        on_segment=None,
+        on_stage=None,
+        start_offset=0.0,
+        allow_empty_result=False,
+        **kwargs,
+    ) -> Transcription:
+        self.audio_path = audio_path
+        self.start_offset = start_offset
+        self.allow_empty_result = allow_empty_result
+        # 截取/入队时写入的“正在从上次中断处继续…”文案，在回调前就已经可见
+        self.stage_messages.append(self.tasks.get(self.task_id).stage_message)
+        if on_stage is not None:
+            on_stage("transcribing")
+            self.stage_messages.append(self.tasks.get(self.task_id).stage_message)
+        for segment in self.new_segments:
+            if on_segment is not None:
+                on_segment(segment)
+        return Transcription(
+            text="\n".join(s.text for s in self.new_segments),
+            segments=list(self.new_segments),
+            language="zh",
+            duration_seconds=30.0,
+        )
+
+
+def resume_processor(
+    settings, *, store_segments, new_segments, media_service=None, overlap=2.0
+):
+    """造一个“上次跑到一半”的任务：store 里已有片段，然后重新入队。"""
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    store = SegmentStore(settings.outputs_dir)
+    for segment in store_segments:
+        store.append(task_id, segment)
+    service = ResumingTranscriptionService(
+        tasks=tasks, task_id=task_id, new_segments=new_segments
+    )
+    media = media_service or FakeMediaService(duration_seconds=30.0)
+    processor = build_processor(
+        settings,
+        media_service=media,
+        transcription_service=service,
+        segment_store=store,
+        progress_persist_interval_seconds=0.0,
+        resume_overlap_seconds=overlap,
+    )
+    processor.process(task_id)
+    processor.shutdown()
+    return tasks, task_id, store, service, media
+
+
+EXISTING = [
+    TranscriptSegment(start=0.0, end=2.0, text="中断前第一段"),
+    TranscriptSegment(start=2.0, end=5.0, text="中断前第二段"),
+]
+
+
+def test_resume_slices_audio_from_checkpoint_with_overlap(settings):
+    _, task_id, _, service, media = resume_processor(
+        settings,
+        store_segments=EXISTING,
+        new_segments=[
+            TranscriptSegment(start=3.0, end=5.0, text="重叠区内容"),  # 已落盘，必须丢弃
+            TranscriptSegment(start=5.0, end=8.5, text="续写内容"),
+        ],
+    )
+
+    # 检查点 5.0 - 重叠 2.0 = 从 3.0 处截取，避免断点落在词中间
+    assert media.slices == [(settings.audio_dir / task_id / "resume.wav", 3.0)]
+    assert service.start_offset == 3.0
+    assert service.allow_empty_result is True
+    assert service.audio_path == settings.audio_dir / task_id / "resume.wav"
+    # 续写文案在片段落盘之前就可见
+    assert service.stage_messages == ["正在从上次中断处继续生成逐字稿"] * 2
+
+
+def test_resume_merges_and_deduplicates_by_timestamp(settings):
+    tasks, task_id, store, _, _ = resume_processor(
+        settings,
+        store_segments=EXISTING,
+        new_segments=[
+            TranscriptSegment(start=3.0, end=5.0, text="重叠区内容"),
+            TranscriptSegment(start=5.0, end=8.5, text="续写内容"),
+        ],
+    )
+
+    texts = [segment.text for segment in store.read_all(task_id)]
+    assert texts == ["中断前第一段", "中断前第二段", "续写内容"]
+
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.SUCCEEDED
+    assert record.resumed_count == 1
+    assert record.segment_count == 3
+    assert record.transcribed_seconds == 8.5
+
+    # 成功产物包含完整内容（中断前 + 续写），且没有重复片段
+    result = json.loads(Path(record.artifacts.result).read_text(encoding="utf-8"))
+    assert [segment["text"] for segment in result["segments"]] == texts
+    assert result["text"] == "\n".join(texts)
+
+
+def test_resume_without_new_segments_still_succeeds(settings):
+    """中断刚好发生在结尾附近：续写跑不出新内容也是正常结果，产物照常生成。"""
+    tasks, task_id, store, service, _ = resume_processor(
+        settings, store_segments=EXISTING, new_segments=[]
+    )
+    assert service.allow_empty_result is True
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.SUCCEEDED
+    assert [segment.text for segment in store.read_all(task_id)] == [
+        segment.text for segment in EXISTING
+    ]
+    result = json.loads(Path(record.artifacts.result).read_text(encoding="utf-8"))
+    assert len(result["segments"]) == 2
+
+
+def test_resume_start_is_clamped_when_checkpoint_is_short(settings):
+    """检查点比重叠秒数还短时，从 0 开始而不是出现负起点。"""
+    _, _, _, _, media = resume_processor(
+        settings,
+        store_segments=[TranscriptSegment(start=0.0, end=1.0, text="很短")],
+        new_segments=[],
+        overlap=2.0,
+    )
+    assert media.slices[0][1] == 0.0
+
+
+def test_fresh_task_does_not_slice_or_allow_empty(settings):
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    media = FakeMediaService(duration_seconds=9.0)
+    store = SegmentStore(settings.outputs_dir)
+    service = ResumingTranscriptionService(tasks=tasks, task_id=task_id)
+    processor = build_processor(
+        settings,
+        media_service=media,
+        transcription_service=service,
+        segment_store=store,
+        progress_persist_interval_seconds=0.0,
+    )
+    processor.process(task_id)
+    processor.shutdown()
+
+    assert media.slices == []
+    assert service.start_offset == 0.0
+    assert service.allow_empty_result is False
+    assert service.audio_path == settings.uploads_dir / task_id / "source.mp3"
+
+
+def test_slice_failure_falls_back_to_full_transcription(settings):
+    """续写准备失败不能让任务卡死：退回完整重跑，并清掉旧片段避免重复。"""
+    tasks, task_id, store, service, _ = resume_processor(
+        settings,
+        store_segments=EXISTING,
+        new_segments=[TranscriptSegment(start=5.0, end=7.0, text="完整重跑内容")],
+        media_service=FailingSliceMediaService(duration_seconds=30.0),
+    )
+
+    assert service.start_offset == 0.0
+    assert service.allow_empty_result is False
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.SUCCEEDED
+    assert record.resumed_count == 0
+    assert [segment.text for segment in store.read_all(task_id)] == ["完整重跑内容"]
+
+
+def test_failed_resume_keeps_partial_result_available(settings):
+    class FailingResumeService(ResumingTranscriptionService):
+        def transcribe(self, audio_path, on_segment=None, on_stage=None, **kwargs):
+            if on_segment is not None:
+                on_segment(TranscriptSegment(start=5.0, end=6.0, text="续写了一段"))
+            raise AppError("TRANSCRIPTION_FAILED", "转写未完成，请重试")
+
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    store = SegmentStore(settings.outputs_dir)
+    for segment in EXISTING:
+        store.append(task_id, segment)
+    processor = build_processor(
+        settings,
+        media_service=FakeMediaService(duration_seconds=30.0),
+        transcription_service=FailingResumeService(tasks=tasks, task_id=task_id),
+        segment_store=store,
+        progress_persist_interval_seconds=0.0,
+    )
+    processor.process(task_id)
+    processor.shutdown()
+
+    record = tasks.get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.partial_result_available is True
+    assert record.segment_count == 3  # 中断前 2 段 + 续写出来的 1 段
+    assert [segment.text for segment in store.read_all(task_id)] == [
+        "中断前第一段",
+        "中断前第二段",
+        "续写了一段",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# 启动自动续跑
+# ---------------------------------------------------------------------------
+
+
+def interrupted_task(settings, *, with_segments: bool):
+    """造一个“转写中被强杀”的任务：状态停在 transcribing。"""
+    tasks, task_id = create_local_task(settings, MediaType.AUDIO)
+    tasks.transition(task_id, TaskStatus.VALIDATING)
+    tasks.transition(task_id, TaskStatus.TRANSCRIBING)
+    if with_segments:
+        store = SegmentStore(settings.outputs_dir)
+        store.append(task_id, TranscriptSegment(start=0.0, end=4.0, text="中断前的片段"))
+    return task_id
+
+
+def test_startup_requeues_task_with_progress(settings):
+    task_id = interrupted_task(settings, with_segments=True)
+    app = create_app(settings)
+    submitted: list[str] = []
+    app.state.processor.submit = submitted.append
+
+    with TestClient(app):
+        pass
+
+    assert submitted == [task_id]
+    record = TaskService(settings.tasks_dir).get(task_id)
+    # 状态回到 pending 重新走链路（状态机不允许 transcribing → validating），
+    # 已落盘片段与进度保留，转写阶段从断点续写，而不是从零重来。
+    assert record.status == TaskStatus.PENDING
+    assert record.error is None
+    assert SegmentStore(settings.outputs_dir).count(task_id) == 1
+
+
+def test_startup_marks_task_without_progress_as_interrupted(settings):
+    task_id = interrupted_task(settings, with_segments=False)
+    app = create_app(settings)
+    submitted: list[str] = []
+    app.state.processor.submit = submitted.append
+
+    with TestClient(app):
+        pass
+
+    assert submitted == []
+    record = TaskService(settings.tasks_dir).get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None and record.error.code == "TASK_INTERRUPTED"
+
+
+def test_startup_resume_can_be_disabled(settings):
+    disabled = dataclasses.replace(settings, resume_on_startup=False)
+    task_id = interrupted_task(disabled, with_segments=True)
+    app = create_app(disabled)
+    submitted: list[str] = []
+    app.state.processor.submit = submitted.append
+
+    with TestClient(app):
+        pass
+
+    assert submitted == []
+    record = TaskService(disabled.tasks_dir).get(task_id)
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None and record.error.code == "TASK_INTERRUPTED"

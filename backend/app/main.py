@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
 
+
+logger = logging.getLogger(__name__)
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings = settings or get_settings()
@@ -69,12 +72,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_workers=app_settings.task_max_workers,
         segment_store=segment_store,
         progress_persist_interval_seconds=app_settings.progress_persist_interval_seconds,
+        resume_overlap_seconds=app_settings.resume_overlap_seconds,
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         run_startup_checks(app_settings, media_service, transcription_service)
-        task_service.recover_incomplete()
+        # 有已落盘片段的任务可以接着跑（阶段 3B），不必从零重来；
+        # 没有进度的任务沿用阶段 1 行为：标记中断失败。
+        is_resumable = (
+            (lambda record: segment_store.has_content(record.task_id))
+            if app_settings.resume_on_startup
+            else None
+        )
+        interrupted, resumable = task_service.recover_incomplete(is_resumable=is_resumable)
+        if interrupted:
+            logger.info("tasks_marked_interrupted count=%s", interrupted)
+        for record in resumable:
+            # 状态机不允许从 transcribing 回到 validating，这里显式回到 pending
+            # 重新走链路；已落盘片段与进度保留，转写阶段会从断点续写。
+            task_service.requeue_for_resume(record.task_id)
+            logger.info(
+                "task_resume_enqueued task_id=%s from_status=%s segment_count=%s",
+                record.task_id,
+                record.status.value,
+                record.segment_count,
+            )
+            processor.submit(record.task_id)
         yield
         processor.shutdown()
 

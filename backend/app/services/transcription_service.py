@@ -76,6 +76,7 @@ class TranscriptionService:
         on_segment: Callable[[TranscriptSegment], None] | None = None,
         on_stage: Callable[[str], None] | None = None,
         start_offset: float = 0.0,
+        allow_empty_result: bool = False,
     ) -> Transcription:
         """转写音频。
 
@@ -87,7 +88,10 @@ class TranscriptionService:
           进程内只报一次）与 ``"transcribing"``（转写中）。模型加载期间没有任何
           片段可展示，调用方需要一个独立文案避免页面看起来卡死；
         - ``start_offset``：续写模式的时间偏移（阶段 3 断点续写）。传入后所有
-          片段时间戳整体加上该偏移，拼回全局时间轴。
+          片段时间戳整体加上该偏移，拼回全局时间轴；
+        - ``allow_empty_result``：续写模式的容错。续写片段的尾部可能全是静音，
+          或上次中断就发生在结尾附近，此时"没有新片段"是正常结果，不应报错
+          （已落盘的内容由调用方拼接）；默认 ``False``，保持阶段 1/2 的严格行为。
         """
         offset = max(0.0, float(start_offset))
         try:
@@ -103,7 +107,9 @@ class TranscriptionService:
                 beam_size=5,
             )
             # VAD 结果在此时已经算好，可以在解码前就判定“没有人声”，不浪费算力。
-            self._ensure_speech_present(info)
+            # 续写模式下尾部可能本来就是静音，因此不做这个判定。
+            if not allow_empty_result:
+                self._ensure_speech_present(info)
             segments: list[TranscriptSegment] = []
             for raw_segment in raw_segments:
                 text = raw_segment.text.strip()
@@ -123,7 +129,7 @@ class TranscriptionService:
             raise AppError("TRANSCRIPTION_FAILED", "转写未完成，请重试") from exc
 
         text = "\n".join(segment.text for segment in segments).strip()
-        if not text:
+        if not text and not allow_empty_result:
             raise AppError("EMPTY_TRANSCRIPT", DEFAULT_EMPTY_TRANSCRIPT_MESSAGE)
         duration = getattr(info, "duration", None)
         language = getattr(info, "language", None)

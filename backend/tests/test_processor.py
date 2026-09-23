@@ -20,6 +20,7 @@ from backend.app.services.transcription_service import Transcription
 class FakeMediaService:
     def __init__(self, duration_seconds: float | None = 2.0) -> None:
         self.duration_seconds = duration_seconds
+        self.slices: list[tuple[Path, float]] = []
 
     def inspect(self, source: Path, expected_type: MediaType) -> MediaInfo:
         assert source.is_file()
@@ -32,6 +33,14 @@ class FakeMediaService:
     def extract_audio(self, source: Path, destination: Path) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(b"wav")
+        return destination
+
+    def slice_audio(self, source: Path, destination: Path, start_seconds: float) -> Path:
+        """断点续写用的截取（阶段 3B）：记录请求的起点，供断言校验。"""
+        assert source.is_file()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"wav")
+        self.slices.append((destination, start_seconds))
         return destination
 
 
@@ -53,6 +62,11 @@ class FakeTranscriptionService:
 class FailingExtractionMediaService(FakeMediaService):
     def extract_audio(self, source: Path, destination: Path) -> Path:
         raise AppError("AUDIO_EXTRACTION_FAILED", "未能从视频中提取音频")
+
+
+class FailingSliceMediaService(FakeMediaService):
+    def slice_audio(self, source: Path, destination: Path, start_seconds: float) -> Path:
+        raise AppError("AUDIO_SLICE_FAILED", "未能续写已中断的任务")
 
 
 class FailingTranscriptionService:
@@ -136,6 +150,7 @@ def build_processor(
     download_service=None,
     segment_store=None,
     progress_persist_interval_seconds=1.0,
+    resume_overlap_seconds=2.0,
 ):
     return TaskProcessor(
         task_service=TaskService(settings.tasks_dir),
@@ -146,6 +161,7 @@ def build_processor(
         subtitle_service=SubtitleService(),
         segment_store=segment_store or SegmentStore(settings.outputs_dir),
         progress_persist_interval_seconds=progress_persist_interval_seconds,
+        resume_overlap_seconds=resume_overlap_seconds,
         uploads_dir=settings.uploads_dir,
         audio_dir=settings.audio_dir,
         downloads_dir=settings.downloads_dir,
