@@ -6,7 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 class TaskStatus(StrEnum):
@@ -100,7 +100,7 @@ class TaskArtifacts(BaseModel):
 class TaskRecord(BaseModel):
     model_config = ConfigDict(use_enum_values=False)
 
-    schema_version: int = 2
+    schema_version: int = CURRENT_SCHEMA_VERSION
     task_id: str
     status: TaskStatus
     source_type: SourceType = SourceType.LOCAL_FILE
@@ -120,6 +120,12 @@ class TaskRecord(BaseModel):
     extract_method: ExtractMethod | None = None
     subtitle_kind: SubtitleKind | None = None
     downloaded_bytes: int | None = Field(default=None, ge=0)
+    # 阶段 3（schema v3）：转写过程的可见性与可恢复性
+    stage_message: str | None = None
+    transcribed_seconds: float | None = Field(default=None, ge=0)
+    segment_count: int = Field(default=0, ge=0)
+    resumed_count: int = Field(default=0, ge=0)
+    partial_result_available: bool = False
     error: TaskError | None = None
     artifacts: TaskArtifacts = Field(default_factory=TaskArtifacts)
 
@@ -149,8 +155,32 @@ class TaskStatusResponse(BaseModel):
     elapsed_seconds: float = Field(ge=0)
     media_duration_seconds: float | None = Field(default=None, ge=0)
     estimated_remaining_seconds: float | None = Field(default=None, ge=0)
+    segment_count: int = Field(default=0, ge=0)
+    transcribed_seconds: float | None = Field(default=None, ge=0)
+    progress_percent: float = Field(default=0.0, ge=0, le=100)
+    partial_result_available: bool = False
     error: TaskError | None
     artifacts: dict[str, str | None]
+
+
+class SegmentItem(BaseModel):
+    """增量拉取接口返回的单个片段。"""
+
+    index: int = Field(ge=0)
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    text: str
+
+
+class TaskSegmentsResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    #: true 表示这是尚未完成的部分结果（任务未成功）；成功完成后为 false。
+    partial: bool
+    total: int = Field(ge=0)
+    next_after: int = Field(ge=0)
+    has_more: bool
+    segments: list[SegmentItem]
 
 
 class TranscriptSegment(BaseModel):

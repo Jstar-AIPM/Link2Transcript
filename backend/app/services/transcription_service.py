@@ -74,15 +74,28 @@ class TranscriptionService:
         self,
         audio_path: Path,
         on_segment: Callable[[TranscriptSegment], None] | None = None,
+        on_stage: Callable[[str], None] | None = None,
+        start_offset: float = 0.0,
     ) -> Transcription:
         """转写音频。
 
-        ``on_segment`` 是为止后阶段预留的逐个片段回调口子：faster-whisper 本身就
-        逐个片段产出结果，传入回调即可在解码过程中拿到新片段。阶段 2 不传该参数，
-        行为与阶段 1 完全一致。
+        三个参数全部可选，**不传时行为与阶段 2 完全一致**：
+
+        - ``on_segment``：逐个片段回调。faster-whisper 本身就逐段产出结果，
+          传入回调即可在解码过程中拿到新片段（阶段 3 用它即时落盘）；
+        - ``on_stage``：阶段回调，取值为 ``"loading_model"``（模型首次加载，
+          进程内只报一次）与 ``"transcribing"``（转写中）。模型加载期间没有任何
+          片段可展示，调用方需要一个独立文案避免页面看起来卡死；
+        - ``start_offset``：续写模式的时间偏移（阶段 3 断点续写）。传入后所有
+          片段时间戳整体加上该偏移，拼回全局时间轴。
         """
+        offset = max(0.0, float(start_offset))
         try:
+            if on_stage is not None and self._model is None:
+                on_stage("loading_model")
             model = self._get_model()
+            if on_stage is not None:
+                on_stage("transcribing")
             raw_segments, info = model.transcribe(
                 str(audio_path),
                 language=None,
@@ -97,8 +110,8 @@ class TranscriptionService:
                 if not text:
                     continue
                 segment = TranscriptSegment(
-                    start=max(0.0, float(raw_segment.start)),
-                    end=max(0.0, float(raw_segment.end)),
+                    start=max(0.0, float(raw_segment.start) + offset),
+                    end=max(0.0, float(raw_segment.end) + offset),
                     text=text,
                 )
                 segments.append(segment)

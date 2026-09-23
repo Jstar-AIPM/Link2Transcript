@@ -27,6 +27,13 @@ def _optional_int(name: str) -> int | None:
         return None
 
 
+def _bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str
@@ -44,6 +51,11 @@ class Settings:
     platform_rate_limit_kbps: int | None = None
     platform_proxy: str = ""
     transcription_speed_factor: float = 4.0
+    # 阶段 3：转写过程实时反馈
+    progress_persist_interval_seconds: float = 1.0
+    resume_on_startup: bool = True
+    resume_overlap_seconds: float = 2.0
+    max_segments_per_task: int = 200_000
 
     @property
     def max_upload_bytes(self) -> int:
@@ -120,4 +132,10 @@ def get_settings() -> Settings:
         platform_rate_limit_kbps=_optional_int("PLATFORM_RATE_LIMIT_KBPS"),
         platform_proxy=os.getenv("PLATFORM_PROXY", "").strip(),
         transcription_speed_factor=float(os.getenv("TRANSCRIPTION_SPEED_FACTOR", "4")),
+        progress_persist_interval_seconds=float(
+            os.getenv("PROGRESS_PERSIST_INTERVAL_SECONDS", "1")
+        ),
+        resume_on_startup=_bool("RESUME_ON_STARTUP", True),
+        resume_overlap_seconds=float(os.getenv("RESUME_OVERLAP_SECONDS", "2")),
+        max_segments_per_task=int(os.getenv("MAX_SEGMENTS_PER_TASK", "200000")),
     )

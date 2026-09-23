@@ -9,9 +9,11 @@ from time import perf_counter
 from backend.app.core.errors import AppError
 from backend.app.core.filenames import sanitize_filename
 from backend.app.core.messages import (
+    TRANSCRIPTION_STAGE_MESSAGES,
     file_too_long_message,
     format_duration,
     incomplete_audio_message,
+    transcribing_progress_message,
 )
 from backend.app.schemas.task import (
     ExtractMethod,
@@ -22,10 +24,12 @@ from backend.app.schemas.task import (
     TaskArtifacts,
     TaskStatus,
     TranscriptResult,
+    TranscriptSegment,
 )
 from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
+from backend.app.services.segment_store import SegmentStore
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
@@ -58,6 +62,62 @@ def _rethrow_with_source_wording(exc: AppError, source_type: SourceType) -> None
         raise AppError(exc.code, message) from exc
 
 
+class _TranscriptionProgress:
+    """转写过程的“即时落盘 + 节流上报”（阶段 3）。
+
+    - **片段逐条落盘**：每产出一个片段就追加进 ``segments.jsonl``（追加写 O(1)），
+      进程被强杀时已完成的内容仍在磁盘上，断点续写才有意义；
+    - **进度节流写回**：任务记录是整体原子替换写入（带 fsync），数千次重写会形成
+      明显的写放大，因此进度按时间节流（默认 1 秒）写回；阶段切换、转写结束与失败
+      这些关键时刻由调用方强制写回，保证断点不滞后。
+    """
+
+    def __init__(
+        self,
+        *,
+        task_service: TaskService,
+        segment_store: SegmentStore,
+        task_id: str,
+        interval_seconds: float = 1.0,
+        initial_segment_count: int = 0,
+        initial_transcribed_seconds: float = 0.0,
+    ) -> None:
+        self.task_service = task_service
+        self.segment_store = segment_store
+        self.task_id = task_id
+        self.interval_seconds = max(0.0, interval_seconds)
+        self.segment_count = max(0, int(initial_segment_count))
+        self.transcribed_seconds = max(0.0, float(initial_transcribed_seconds))
+        # 首个片段立即写回，用户不必等到第一个节流周期结束才看到进度。
+        self._awaiting_first_segment = True
+        self._last_persist_at = perf_counter()
+
+    def on_stage(self, code: str) -> None:
+        message = TRANSCRIPTION_STAGE_MESSAGES.get(code)
+        if message is not None:
+            self.task_service.set_stage_message(self.task_id, message)
+
+    def on_segment(self, segment: TranscriptSegment) -> None:
+        index = self.segment_store.append(self.task_id, segment)
+        if index is None:
+            return
+        self.segment_count = max(self.segment_count, index + 1)
+        self.transcribed_seconds = max(self.transcribed_seconds, float(segment.end))
+        throttled = perf_counter() - self._last_persist_at >= self.interval_seconds
+        if self._awaiting_first_segment or throttled:
+            self._awaiting_first_segment = False
+            self.persist(stage_message=transcribing_progress_message(self.segment_count))
+
+    def persist(self, *, stage_message: str | None = None) -> None:
+        self.task_service.set_progress(
+            self.task_id,
+            segment_count=self.segment_count,
+            transcribed_seconds=self.transcribed_seconds,
+            stage_message=stage_message,
+        )
+        self._last_persist_at = perf_counter()
+
+
 class TaskProcessor:
     def __init__(
         self,
@@ -68,12 +128,14 @@ class TaskProcessor:
         export_service: ExportService,
         download_service: DownloadService,
         subtitle_service: SubtitleService,
+        segment_store: SegmentStore,
         uploads_dir: Path,
         audio_dir: Path,
         downloads_dir: Path,
         max_media_seconds: float = 180 * 60,
         max_media_minutes: int = 180,
         max_workers: int = 1,
+        progress_persist_interval_seconds: float = 1.0,
     ) -> None:
         self.task_service = task_service
         self.media_service = media_service
@@ -86,6 +148,8 @@ class TaskProcessor:
         self.downloads_dir = downloads_dir
         self.max_media_seconds = max_media_seconds
         self.max_media_minutes = max_media_minutes
+        self.segment_store = segment_store
+        self.progress_persist_interval_seconds = progress_persist_interval_seconds
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="transcript")
 
     def submit(self, task_id: str) -> None:
@@ -116,6 +180,7 @@ class TaskProcessor:
                 exc.code,
                 perf_counter() - task_started,
             )
+            self._mark_partial_result(task_id)
             self.task_service.fail(
                 task_id,
                 code=exc.code,
@@ -129,6 +194,7 @@ class TaskProcessor:
                 type(exc).__name__,
                 perf_counter() - task_started,
             )
+            self._mark_partial_result(task_id)
             self.task_service.fail(
                 task_id,
                 code="INTERNAL_PROCESSING_ERROR",
@@ -253,11 +319,24 @@ class TaskProcessor:
     ) -> None:
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.TRANSCRIBING)
+        progress = _TranscriptionProgress(
+            task_service=self.task_service,
+            segment_store=self.segment_store,
+            task_id=task_id,
+            interval_seconds=self.progress_persist_interval_seconds,
+        )
         try:
-            transcription = self.transcription_service.transcribe(audio_path)
+            transcription = self.transcription_service.transcribe(
+                audio_path,
+                on_stage=progress.on_stage,
+                on_segment=progress.on_segment,
+            )
         except AppError as exc:
+            # 失败也要把已完成的进度写回：部分结果不丢，用户能看到已经转出来的内容。
+            progress.persist()
             _rethrow_with_source_wording(exc, source_type)
             raise
+        progress.persist()
         self._log_stage(task_id, TaskStatus.TRANSCRIBING, stage_started)
 
         record = self.task_service.set_extraction(
@@ -326,3 +405,15 @@ class TaskProcessor:
             stage.value,
             perf_counter() - started_at,
         )
+
+    def _mark_partial_result(self, task_id: str) -> None:
+        """任务失败时，如果磁盘上已有片段，就标记“部分结果可用”。
+
+        部分结果不生成 ``transcript.md`` / ``txt`` / ``result.json``：保持
+        “成功产物才可下载”的既有语义，避免半成品被当成完整逐字稿。
+        """
+        try:
+            if self.segment_store.has_content(task_id):
+                self.task_service.mark_partial_result(task_id, available=True)
+        except Exception:  # noqa: BLE001 - 标记失败不应掩盖真正的失败原因
+            logger.warning("partial_result_mark_failed task_id=%s", task_id, exc_info=True)

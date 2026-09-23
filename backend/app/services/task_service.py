@@ -120,6 +120,8 @@ class TaskService:
                 )
             record.status = new_status
             record.progress_stage = new_status
+            # 粗粒度阶段切换时清掉细粒度文案，避免成功后仍显示“正在生成逐字稿”。
+            record.stage_message = None
             record.updated_at = datetime.now().astimezone()
             if artifacts is not None:
                 record.artifacts = artifacts
@@ -136,6 +138,35 @@ class TaskService:
 
     def set_original_filename(self, task_id: str, original_filename: str) -> TaskRecord:
         return self._update(task_id, original_filename=original_filename)
+
+    def set_stage_message(self, task_id: str, stage_message: str | None) -> TaskRecord:
+        """设置细粒度阶段文案（阶段 3）。传 ``None`` 表示回落默认阶段文案。"""
+        return self._update(task_id, stage_message=stage_message)
+
+    def set_progress(
+        self,
+        task_id: str,
+        *,
+        segment_count: int,
+        transcribed_seconds: float,
+        stage_message: str | None = None,
+    ) -> TaskRecord:
+        """写回转写进度。
+
+        调用方（处理器）会节流，不逐片段调用：任务记录是整体原子替换写入，
+        数千次重写会造成明显的写放大。
+        """
+        changes: dict[str, object] = {
+            "segment_count": max(0, int(segment_count)),
+            "transcribed_seconds": max(0.0, float(transcribed_seconds)),
+        }
+        if stage_message is not None:
+            changes["stage_message"] = stage_message
+        return self._update(task_id, **changes)
+
+    def mark_partial_result(self, task_id: str, *, available: bool = True) -> TaskRecord:
+        """标记这是一份保留的部分结果（失败时已生成的片段不丢弃）。"""
+        return self._update(task_id, partial_result_available=available)
 
     def set_extraction(
         self,
@@ -167,6 +198,7 @@ class TaskService:
             failed_stage = record.status
             record.status = TaskStatus.FAILED
             record.progress_stage = TaskStatus.FAILED
+            record.stage_message = None
             record.updated_at = datetime.now().astimezone()
             record.error = TaskError(
                 code=code,

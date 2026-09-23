@@ -106,7 +106,8 @@ API 文档：<http://127.0.0.1:8000/docs>
 | --- | --- | --- |
 | `POST` | `/api/v1/tasks` | 上传一个文件并创建任务 |
 | `POST` | `/api/v1/tasks/from-url` | 提交一个 B 站链接并创建任务 |
-| `GET` | `/api/v1/tasks/{task_id}` | 查询任务状态 |
+| `GET` | `/api/v1/tasks/{task_id}` | 查询任务状态（含进度） |
+| `GET` | `/api/v1/tasks/{task_id}/segments` | **增量**拉取转写片段（转写过程中可反复调用） |
 | `GET` | `/api/v1/tasks/{task_id}/result` | 获取结构化逐字稿 |
 | `GET` | `/api/v1/tasks/{task_id}/download/markdown` | 下载 Markdown |
 | `GET` | `/api/v1/tasks/{task_id}/download/txt` | 下载 TXT |
@@ -131,6 +132,37 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 
 链接类错误在**创建任务之前**就会返回（非法链接不会留下失败记录）；时长、可用性、多 P 等需要联网判断的错误，会在 `checking_subtitle` 阶段让任务进入 `failed`，并给出中文说明。
 
+### 转写过程实时反馈（阶段 3A 后端已就绪）
+
+转写是逐段产出的：每产出一个片段就立即追加到 `data/outputs/{task_id}/segments.jsonl`，
+因此任务**失败或被强杀时已生成的内容也不会丢**。调用方用轮询增量拉取：
+
+```bash
+# 第一次从 0 开始；之后把上次响应里的 next_after 作为 after 传回
+curl 'http://127.0.0.1:8000/api/v1/tasks/{task_id}/segments?after=0&limit=500'
+```
+
+```json
+{
+  "task_id": "...",
+  "status": "transcribing",
+  "partial": true,
+  "total": 128,
+  "next_after": 128,
+  "has_more": false,
+  "segments": [{"index": 0, "start": 0.4, "end": 5.4, "text": "毕业之后呢"}]
+}
+```
+
+- `partial: true` 表示这是**尚未完成**的部分结果，任务成功后为 `false`（此时接口返回完整片段；
+  有字幕的链接任务也走同一接口，片段直接来自成功产物）；
+- 任务状态接口同时给出 `segment_count`、`transcribed_seconds`、`progress_percent`、
+  `partial_result_available`；
+- 失败时**不生成** `transcript.md` / `transcript.txt` / `result.json`：保持“成功产物才可下载”的语义，
+  避免半成品被当成完整逐字稿；
+- “正在加载语音识别模型”这类细粒度文案会出现在首字延迟期间（模型加载与音频分析），
+  避免这段时间看起来像卡死。
+
 ## 测试
 
 运行离线自动化测试（不访问网络）：
@@ -148,7 +180,9 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 - **有字幕时断言不调用语音识别**；
 - 任务状态流转、JSON 持久化与重启恢复；
 - 视频处理链路编排、音频提取 / 转写 / 导出失败路径；
-- schema v1 历史记录可读、可下载、写入时升级为 v2；
+- 逐段实时落盘、增量接口（`after` / `limit` / `partial` / `has_more`）、进度百分比与阶段文案；
+- 失败保留部分结果且不生成成功产物、末行被截断（进程被强杀）时的容错；
+- schema v1 / v2 历史记录可读、可下载、写入时升级为 v3；
 - 所有用户可见错误文案均为中文且不含技术术语。
 
 ## 真实验收
@@ -188,7 +222,10 @@ B站无字幕：pending → checking_subtitle → downloading_audio → transcri
 - **大会员专享视频不支持**：只能拿到几分钟的预览片段，会被明确拒绝而不是输出错误结果。
 - **多 P / 合集不支持**：一个任务只产出一份逐字稿。
 - **中文识别可能夹杂繁体字或同音错字**：这是 Whisper 模型本身的限制，当前版本不做自动纠正。
-- 分片转写、进度百分比、取消任务、转写过程实时呈现**不在当前版本范围内**，已记录在《后续路线图与待办清单》。
+- 转写过程已支持逐段落盘与增量拉取（后端），进度百分比与「正在生成逐字稿（已生成 N 段）」文案已可用；
+  验收页的增量渲染与「未完成」标注在阶段 3C 完成。
+- **取消任务**不在当前版本范围内；固定分片转写已实测否决（带背景音乐的内容没有可用静音点，理由见第三阶段技术文档）。
+  以上均已记录在《后续路线图与待办清单》。
 
 运行数据集中存放在 `data/`，不会提交到 Git。日志只记录任务 ID、阶段、错误类型和耗时，不记录完整音视频、逐字稿正文或 Cookie。
 

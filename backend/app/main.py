@@ -17,6 +17,7 @@ from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
 from backend.app.services.platform_service import PlatformService
 from backend.app.services.processor import TaskProcessor
+from backend.app.services.segment_store import SegmentStore
 from backend.app.services.startup_service import run_startup_checks
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
@@ -50,6 +51,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rate_limit_kbps=app_settings.platform_rate_limit_kbps,
     )
     subtitle_service = SubtitleService()
+    segment_store = SegmentStore(
+        app_settings.outputs_dir, max_segments=app_settings.max_segments_per_task
+    )
     processor = TaskProcessor(
         task_service=task_service,
         media_service=media_service,
@@ -63,6 +67,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_media_seconds=app_settings.max_media_seconds,
         max_media_minutes=app_settings.max_media_minutes,
         max_workers=app_settings.task_max_workers,
+        segment_store=segment_store,
+        progress_persist_interval_seconds=app_settings.progress_persist_interval_seconds,
     )
 
     @asynccontextmanager
@@ -81,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.platform_service = platform_service
     app.state.download_service = download_service
     app.state.subtitle_service = subtitle_service
+    app.state.segment_store = segment_store
     app.state.processor = processor
 
     @app.exception_handler(AppError)

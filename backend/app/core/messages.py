@@ -38,6 +38,30 @@ def file_too_long_message(duration_seconds: float, limit_minutes: int) -> str:
     )
 
 
+# ---------------------------------------------------------------------
+# 转写过程的细粒度阶段文案（阶段 3）
+#
+# 首字延迟期间（模型加载、音频分析）没有任何片段可展示，必须给出独立文案，
+# 否则页面看起来像卡死。这些文案覆盖默认的粗粒度阶段文案。
+# ---------------------------------------------------------------------
+
+LOADING_MODEL_MESSAGE = "正在加载语音识别模型"
+TRANSCRIBING_MESSAGE = "正在生成逐字稿"
+RESUMING_MESSAGE = "正在从上次中断处继续生成逐字稿"
+
+
+# 转写服务上报的阶段码 → 用户文案。
+TRANSCRIPTION_STAGE_MESSAGES: dict[str, str] = {
+    "loading_model": LOADING_MODEL_MESSAGE,
+    "transcribing": TRANSCRIBING_MESSAGE,
+}
+
+
+def transcribing_progress_message(segment_count: int) -> str:
+    """已经产出片段之后，把“已生成 N 段”告诉用户，让过程可感知。"""
+    return f"正在生成逐字稿（已生成 {max(0, segment_count)} 段）"
+
+
 def incomplete_audio_message(actual_seconds: float, declared_seconds: float) -> str:
     return (
         f"获取到的音频不完整（仅 {format_duration(actual_seconds)}，"

@@ -11,6 +11,7 @@ from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaInfo
 from backend.app.services.processor import TaskProcessor
+from backend.app.services.segment_store import SegmentStore
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import Transcription
@@ -38,7 +39,7 @@ class FakeTranscriptionService:
     def __init__(self) -> None:
         self.calls: list[Path] = []
 
-    def transcribe(self, audio_path: Path) -> Transcription:
+    def transcribe(self, audio_path: Path, **kwargs) -> Transcription:
         self.calls.append(audio_path)
         assert audio_path.is_file()
         return Transcription(
@@ -55,14 +56,14 @@ class FailingExtractionMediaService(FakeMediaService):
 
 
 class FailingTranscriptionService:
-    def transcribe(self, audio_path: Path) -> Transcription:
+    def transcribe(self, audio_path: Path, **kwargs) -> Transcription:
         raise AppError("TRANSCRIPTION_FAILED", "转写未完成，请重试")
 
 
 class SilentTranscriptionService:
     """模拟“内容里没有人声”：服务层抛出通用提示，由编排层换成具体说法。"""
 
-    def transcribe(self, audio_path: Path) -> Transcription:
+    def transcribe(self, audio_path: Path, **kwargs) -> Transcription:
         raise AppError("SILENT_AUDIO", "未检测到人声内容")
 
 
@@ -133,6 +134,8 @@ def build_processor(
     transcription_service=None,
     export_service=None,
     download_service=None,
+    segment_store=None,
+    progress_persist_interval_seconds=1.0,
 ):
     return TaskProcessor(
         task_service=TaskService(settings.tasks_dir),
@@ -141,6 +144,8 @@ def build_processor(
         export_service=export_service or ExportService(settings.outputs_dir),
         download_service=download_service or StubDownloadService(),
         subtitle_service=SubtitleService(),
+        segment_store=segment_store or SegmentStore(settings.outputs_dir),
+        progress_persist_interval_seconds=progress_persist_interval_seconds,
         uploads_dir=settings.uploads_dir,
         audio_dir=settings.audio_dir,
         downloads_dir=settings.downloads_dir,
