@@ -12,10 +12,22 @@ cd ..
 
 # 2) 再启动前端
 cd frontend
-npm install          # 首次
+npm install                  # 首次
 cp .env.example .env.local   # 首次（BACKEND_ORIGIN 默认已是本地后端）
-npm run dev          # http://127.0.0.1:3100（端口固定为 3100，见下方说明）
+
+# 日常使用（推荐）：生产模式，最稳
+npm run build && npm start   # http://127.0.0.1:3100
+
+# 改前端代码时：开发模式（有热更新）
+npm run dev                  # http://127.0.0.1:3100
 ```
+
+> ⚠️ **不要在前端服务运行时执行 `npm run build`**：`next dev` 与 `next build`
+> 共用 `.next` 目录，构建会把正在运行的服务弄崩（真实踩过：页面突然打不开）。
+> 需要重新构建时，先停掉服务，构建完再 `npm start`。
+
+> 手机测试用局域网地址：`http://<这台电脑的局域网 IP>:3100`
+> （例如 `http://192.168.0.116:3100`，需同一 Wi-Fi）。
 
 ## 环境变量
 
@@ -42,6 +54,17 @@ src/lib/          接口客户端、运行时校验（zod）、格式化
 src/styles/       设计变量（颜色的唯一来源）
 tests/            组件与契约测试；fixtures 是真实后端响应样本
 ```
+
+## 两个真实踩过的坑
+
+**1. 开发模式下 `127.0.0.1` 被判定为跨来源**
+Next 16 默认拦截「跨来源」的开发资源（HMR、开发态 chunk），用 `127.0.0.1`
+或局域网 IP 打开会加载不完整。已在 `next.config.ts` 的 `allowedDevOrigins`
+里放行 `127.0.0.1` / `localhost` / 本机局域网 IP / `*.local`。
+（生产模式没有这个限制，所以日常使用推荐 `npm start`。）
+
+**2. 运行中执行 `npm run build` 会让服务崩掉**
+`next dev` 与 `next build` 共用 `.next`，构建期间正在运行的服务会失效。
 
 ## 端口为什么是 3100
 
