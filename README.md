@@ -90,15 +90,38 @@ BILIBILI_COOKIE=SESSDATA=xxxxxx; bili_jct=xxxxxx
 
 ## 启动
 
+### 后端（FastAPI）
+
 ```bash
 .venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-浏览器打开：<http://127.0.0.1:8000>
-
 API 文档：<http://127.0.0.1:8000/docs>
 
 服务启动时会检查数据目录写入权限、FFmpeg 可执行文件、faster-whisper 运行依赖以及 `yt-dlp` 是否可用。模型权重采用延迟加载：第一次转写时才从本地缓存读取或下载，避免每次启动都加载数百 MB 模型。
+
+### 正式前端（Next.js，阶段 4）
+
+前端是独立工程，浏览器只访问**同源**地址；后端地址由服务端配置（免 CORS）。
+
+```bash
+cd frontend
+npm install                                 # 首次
+cp .env.example .env.local                  # 首次；BACKEND_ORIGIN 默认已是本地后端
+npm run dev                                 # http://127.0.0.1:3100
+```
+
+| 环境变量 | 说明 |
+| --- | --- |
+| `BACKEND_ORIGIN` | 后端地址（只在服务端使用）。Next 通过 `rewrites` 把同源 `/api/:path*` 转发到这里；**上传**例外，走流式 route handler（`app/api/v1/tasks/route.ts`），因为代理层默认限制 10 MB 请求体，而上传上限是 2048 MB。生产部署只改这一处。 |
+
+前端端口固定为 **3100**（不是 3000）：同机其它前端工程常占用 3000，真实出现过「打开我们的任务链接却看到别人项目的 404 页面」。
+
+前端质量命令：`npm run verify`（typecheck + lint + 测试 + 构建）。
+
+> 早期的单文件验收页 `backend/app/static/index.html` 仍可通过后端根地址访问，仅用于后端单独验证。
+
+浏览器打开：<http://127.0.0.1:3100>（正式前端）或 <http://127.0.0.1:8000>（后端验收页）
 
 ## API
 
@@ -261,4 +284,7 @@ curl 'http://127.0.0.1:8000/api/v1/tasks/{task_id}/segments?after=0&limit=500'
 - `开发文档/第二阶段真实验收记录.md`：第二阶段的真实链接实测记录与已修复问题；
 - `开发文档/第三阶段真实验收记录.md`：第三阶段的真实长内容、强杀续写、刷新、取消实测记录；
 - `开发文档/后续路线图与待办清单.md`：**所有后置项的集中登记处**；
+- `开发文档/第四阶段技术开发文档_正式前端.md`：正式前端设计与实施记录；
+- `开发文档/第四阶段设计基调_视觉参考.md`：颜色/字阶/间距的唯一来源与参考来源；
+- `frontend/README.md`：前端启动、端口、环境变量与踩坑说明；
 - `skill/SKILL.md`：逐字稿提取工作流的说明层。

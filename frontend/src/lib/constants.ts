@@ -1,0 +1,33 @@
+/**
+ * 提交前的弱校验（真正的把关在后端）。
+ *
+ * 为什么前端还要做：如果完全交给后端，用户要先上传完 2 GB 才被告知
+ * 「格式不支持」——那是很差的体验。这里只做**零成本的即时判断**，
+ * 文案与后端保持一致，避免两边说法不一样。
+ */
+export const ALLOWED_EXTENSIONS = ["mp3", "m4a", "wav", "mp4", "mov"] as const;
+
+export const ALLOWED_EXTENSIONS_LABEL = "MP3 / M4A / WAV / MP4 / MOV";
+
+export function extensionOf(filename: string): string {
+  const parts = filename.split(".");
+  return parts.length > 1 ? (parts[parts.length - 1] ?? "").toLowerCase() : "";
+}
+
+export function isSupportedFilename(filename: string): boolean {
+  return (ALLOWED_EXTENSIONS as readonly string[]).includes(extensionOf(filename));
+}
+
+/**
+ * B 站链接的弱校验：只判断「像不像」，不做平台白名单（那是后端的事）。
+ * 支持 bilibili.com 子域与 b23.tv 短链。
+ */
+export function looksLikeBilibiliLink(value: string): boolean {
+  return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv)\//i.test(value.trim());
+}
+
+/** 大文件提示用：把字节说成人话（与后端一致用 MB / GB） */
+export function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+  return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB`;
+}

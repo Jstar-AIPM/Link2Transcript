@@ -1,0 +1,62 @@
+/* 语义化设计变量（唯一来源见《第四阶段设计基调_视觉参考.md》）
+   页面里不允许出现十六进制颜色值；只允许使用这里的变量 / Tailwind 语义类名。 */
+
+:root {
+  /* 面 */
+  --surface-canvas: #faf8f5;
+  --surface-raised: #fdfbfa;
+  --surface-sunken: #f3f1ec;
+  --surface-ink: #27251e;
+
+  /* 字 */
+  --text-primary: #27251e;
+  --text-secondary: #72706b;
+  --text-muted: #92918b;
+  --text-inverse: #faf8f5;
+
+  /* 线 */
+  --border-hairline: #d1d1cd;
+  --border-strong: #b9b7b1;
+
+  /* 强调：只用于「进行中 / 当前 / 进度 / 可点」 */
+  --accent: #016a71;
+  --accent-hover: #015c62;
+  --accent-soft: #e6f0f0;
+  --accent-ring: rgba(1, 106, 113, 0.35);
+
+  /* 状态（暖调低饱和，与纸色同族） */
+  --status-success-text: #2f6b4f;
+  --status-success-bg: #eef5f0;
+  --status-warning-text: #7a4b06;
+  --status-warning-bg: #fdf4e6;
+  --status-danger-text: #a4342a;
+  --status-danger-bg: #fbefed;
+  --status-neutral-text: #5f5d58;
+  --status-neutral-bg: #f1efea;
+
+  /* 间距（只用这 7 档） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 圆角 */
+  --radius-chip: 9999px;
+  --radius-button: 10px;
+  --radius-input: 12px;
+  --radius-card: 16px;
+
+  /* 阴影：全站只有一个 */
+  --shadow-subtle: rgba(0, 0, 0, 0.06) 0 1px 2px 0;
+
+  /* 布局 */
+  --page-max-width: 900px;
+  --reading-max-width: 68ch;
+
+  /* 动效 */
+  --duration-fast: 120ms;
+  --duration-base: 300ms;
+}
