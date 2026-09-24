@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 本地部署产物（standalone 打包目录），不是源码
+    "artifact/**",
   ]),
 ]);
 

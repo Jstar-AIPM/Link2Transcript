@@ -81,9 +81,13 @@ ALLOWED_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
 
 
 class TaskService:
-    def __init__(self, tasks_dir: Path) -> None:
+    def __init__(self, tasks_dir: Path, *, storage=None, data_dir: Path | None = None) -> None:
         self.tasks_dir = tasks_dir
         self.tasks_dir.mkdir(parents=True, exist_ok=True)
+        # 对象存储（阶段 6）：任务记录体积极小，直接"写穿"——这样实例被替换后，
+        # 任何实例都还能读到这条任务（否则用户会看到"任务不存在"）。
+        self.storage = storage
+        self.data_dir = data_dir or tasks_dir.parent
         self._lock = threading.RLock()
 
     def new_task_id(self) -> str:
@@ -128,7 +132,9 @@ class TaskService:
     def get(self, task_id: str) -> TaskRecord:
         path = self._path(task_id)
         if not path.is_file():
-            raise TaskNotFoundError()
+            # 本地没有（实例被替换 / 清理过）→ 尝试从对象存储取回这一条
+            if not self._restore_from_storage(path):
+                raise TaskNotFoundError()
         try:
             return TaskRecord.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValidationError, json.JSONDecodeError) as exc:
@@ -359,6 +365,27 @@ class TaskService:
             raise TaskNotFoundError() from exc
         return self.tasks_dir / f"{normalized}.json"
 
+    def _restore_from_storage(self, path: Path) -> bool:
+        if self.storage is None or not getattr(self.storage, "enabled", False):
+            return False
+        key = f"tasks/{path.stem}.json"
+        try:
+            if not self.storage.get_file(key, path):
+                return False
+        except Exception:  # noqa: BLE001 - 读不到远端就按"没有这个任务"处理
+            logger.warning("task_restore_failed key=%s", key, exc_info=True)
+            return False
+        return True
+
+    def _mirror_to_storage(self, target: Path) -> None:
+        """把任务记录同步到对象存储（失败只告警，不影响任务本身）。"""
+        if self.storage is None or not getattr(self.storage, "enabled", False):
+            return
+        try:
+            self.storage.put_file(f"tasks/{target.stem}.json", target)
+        except Exception:  # noqa: BLE001
+            logger.warning("task_mirror_failed task_id=%s", target.stem, exc_info=True)
+
     def _write(self, record: TaskRecord) -> None:
         target = self._path(record.task_id)
         # 惰性迁移：任何一次写入都把记录升到当前 schema 版本。
@@ -374,3 +401,4 @@ class TaskService:
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
+        self._mirror_to_storage(target)

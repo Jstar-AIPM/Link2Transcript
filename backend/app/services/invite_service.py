@@ -19,12 +19,16 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import secrets
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -50,6 +54,9 @@ class InviteCode:
     note: str = ""
 
 
+TOKEN_VERSION = "v1"
+
+
 @dataclass
 class Session:
     token: str
@@ -60,8 +67,57 @@ class Session:
 
     @property
     def owner_id(self) -> str:
-        """任务归属标识：用会话 token 派生，保证"同一码的不同人"互相看不到数据。"""
-        return self.token
+        """任务归属标识：由**邀请码**派生。
+
+        为什么不用 token：令牌是自校验的（无服务端存储），重新登录会换一张令牌；
+        若归属跟着令牌走，用户重登后就看不到自己之前建的任务了。
+        用邀请码派生则意味着"同一个码的人共享任务可见性" —— 产品经理已确认
+        不需要区分一码一人还是一码多人，因此这里选择对用户更省心的语义。
+        """
+        return hashlib.sha256(f"owner:{self.code}".encode()).hexdigest()[:32]
+
+
+class SessionTokenCodec:
+    """会话令牌编解码：``v1.<payload>.<签名>``。
+
+    为什么要自校验：线上是**函数实例**，`/tmp` 随实例回收/发布而清空。
+    如果把会话存在实例本地文件里，用户登录后只要发生一次实例替换就会
+    "莫名其妙要求重新登录"（真实踩过）。改成 HMAC 签名令牌后，
+    任何实例都能独立验证令牌，不再依赖本地存储。
+    """
+
+    def __init__(self, secret: str) -> None:
+        self.secret = secret.encode()
+
+    def encode(self, *, code: str, expires_at: datetime, is_admin: bool, issued_at: datetime) -> str:
+        payload = json.dumps(
+            {"c": code, "e": int(expires_at.timestamp()), "a": bool(is_admin), "i": int(issued_at.timestamp())},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        body = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        return f"{TOKEN_VERSION}.{body}.{self._sign(body)}"
+
+    def decode(self, token: str) -> dict | None:
+        parts = token.split(".")
+        if len(parts) != 3 or parts[0] != TOKEN_VERSION:
+            return None
+        body = parts[1]
+        if not hmac.compare_digest(self._sign(body), parts[2]):
+            return None
+        try:
+            padded = body + "=" * (-len(body) % 4)
+            data = json.loads(base64.urlsafe_b64decode(padded).decode())
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(data, dict) or "c" not in data or "e" not in data:
+            return None
+        if int(data["e"]) <= int(time.time()):
+            return None
+        return data
+
+    def _sign(self, body: str) -> str:
+        return hmac.new(self.secret, body.encode(), hashlib.sha256).hexdigest()[:32]
 
 
 class InviteService:
@@ -72,11 +128,20 @@ class InviteService:
         admin_code: str = "",
         valid_days: int = 30,
         max_uses: int = 20,
+        session_secret: str = "",
+        on_change=None,
     ) -> None:
         self.store_path = store_path
         self.admin_code = admin_code.strip()
         self.valid_days = max(1, valid_days)
         self.default_max_uses = max(1, max_uses)
+        # 令牌签名密钥：优先用配置；缺失时退化为"由管理员码派生"，保证功能可用
+        secret = (session_secret or "").strip() or f"derived:{self.admin_code}"
+        if not (session_secret or "").strip() and self.admin_code:
+            logger.warning("session_secret_missing —— 正在使用由管理员码派生的签名密钥，建议配置 SESSION_SECRET")
+        self.codec = SessionTokenCodec(secret)
+        # 邀请码用量变化后的回调（线上用于把用量立刻同步到对象存储）
+        self.on_change = on_change
         self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ 登录
@@ -91,7 +156,6 @@ class InviteService:
 
         if self.admin_code and secrets.compare_digest(code, self.admin_code.upper()):
             session = self._new_session(code, now, is_admin=True)
-            self._save_session(session)
             logger.info("admin_login")
             return session
 
@@ -115,25 +179,29 @@ class InviteService:
                 )
             entry["uses"] += 1
             self._write(store)
+        # 用量变化要立刻同步到对象存储：否则实例被替换后"已用次数"会被备份恢复成旧值
+        self._notify_change()
 
         session = self._new_session(code, now, is_admin=False)
-        self._save_session(session)
         logger.info("invite_login remaining_uses=%s", entry["max_uses"] - entry["uses"])
         return session
 
     def resolve(self, token: str) -> Session | None:
-        """校验 token 是否有效（过期即失效）。"""
+        """校验令牌：只做签名与有效期校验，**不依赖任何本地存储**。"""
         if not token:
             return None
-        now = datetime.now().astimezone()
-        with self._lock:
-            store = self._load()
-            for item in store["sessions"]:
-                if secrets.compare_digest(item["token"], token):
-                    if datetime.fromisoformat(item["expires_at"]) <= now:
-                        return None
-                    return Session(**item)
-        return None
+        data = self.codec.decode(token)
+        if data is None:
+            return None
+        expires_at = datetime.fromtimestamp(int(data["e"]), tz=datetime.now().astimezone().tzinfo)
+        created_at = datetime.fromtimestamp(int(data.get("i", data["e"])), tz=expires_at.tzinfo)
+        return Session(
+            token=token,
+            code=str(data["c"]),
+            created_at=created_at.isoformat(),
+            expires_at=expires_at.isoformat(),
+            is_admin=bool(data.get("a")),
+        )
 
     def remaining_uses(self, code: str) -> int | None:
         """管理员码返回 None（不限次）；普通码返回剩余次数。"""
@@ -169,6 +237,7 @@ class InviteService:
                 )
             store["codes"].extend(asdict(item) for item in created)
             self._write(store)
+        self._notify_change()
         logger.info("invite_codes_created count=%s valid_days=%s", len(created), self.valid_days)
         return created
 
@@ -190,26 +259,26 @@ class InviteService:
                 return code
 
     def _new_session(self, code: str, now: datetime, *, is_admin: bool) -> Session:
+        expires_at = now + timedelta(days=self.valid_days)
         return Session(
-            token=secrets.token_urlsafe(24),
+            token=self.codec.encode(code=code, expires_at=expires_at, is_admin=is_admin, issued_at=now),
             code=code,
             created_at=now.isoformat(),
-            expires_at=(now + timedelta(days=self.valid_days)).isoformat(),
+            expires_at=expires_at.isoformat(),
             is_admin=is_admin,
         )
 
-    def _save_session(self, session: Session) -> None:
-        with self._lock:
-            store = self._load()
-            store["sessions"].append(asdict(session))
-            # 顺手清掉过期的会话，避免文件无限增长
-            now = datetime.now().astimezone()
-            store["sessions"] = [
-                item
-                for item in store["sessions"]
-                if datetime.fromisoformat(item["expires_at"]) > now
-            ]
-            self._write(store)
+    def _notify_change(self) -> None:
+        if self.on_change is None:
+            return
+        try:
+            self.on_change()
+        except Exception:  # noqa: BLE001 - 同步失败不影响登录
+            logger.warning("invite_store_sync_failed", exc_info=True)
+
+    def reload_from_store(self) -> None:
+        """从磁盘重新加载（对象存储恢复后调用）。当前实现是每次读取文件，这里仅作语义占位。"""
+        return None
 
     def _load(self) -> dict:
         if not self.store_path.is_file():

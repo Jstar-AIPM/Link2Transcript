@@ -97,14 +97,64 @@ def test_empty_code_is_rejected(tmp_path: Path):
 
 
 def test_session_expiry_is_enforced(tmp_path: Path):
+    """令牌是自校验的：过期由签名载荷里的有效期决定，不依赖任何本地文件。"""
     service = make_service(tmp_path)
     session = service.login("ADMIN-CODE")
     assert service.resolve(session.token) is not None
 
-    store = json.loads(service.store_path.read_text(encoding="utf-8"))
-    store["sessions"][0]["expires_at"] = (datetime.now().astimezone() - timedelta(seconds=1)).isoformat()
-    service.store_path.write_text(json.dumps(store), encoding="utf-8")
-    assert service.resolve(session.token) is None
+    expired = service.codec.encode(
+        code="ADMIN-CODE",
+        expires_at=datetime.now().astimezone() - timedelta(seconds=1),
+        is_admin=True,
+        issued_at=datetime.now().astimezone() - timedelta(days=31),
+    )
+    assert service.resolve(expired) is None
+
+
+def test_token_survives_instance_replacement(tmp_path: Path):
+    """核心回归：线上是函数实例，实例一旦被替换，本地存储就没了。
+
+    令牌必须**自校验**，否则用户会遇到"刚登录完提交任务却要求重新登录"（真实故障）。
+    """
+    data_dir = tmp_path / "data"
+    service = InviteService(data_dir / "invite-codes.json", admin_code="ADMIN-CODE")
+    token = service.login("ADMIN-CODE").token
+
+    # 模拟实例被替换：新实例没有任何本地会话文件（甚至连目录都是新的）
+    fresh_dir = tmp_path / "fresh-instance-data"
+    fresh_service = InviteService(
+        fresh_dir / "invite-codes.json",
+        admin_code="ADMIN-CODE",
+        session_secret="",
+    )
+    # 两个实例用同样的密钥来源（生产环境是同一个 SESSION_SECRET），令牌依旧有效
+    assert fresh_service.resolve(token) is not None
+
+
+def test_tampered_token_is_rejected(tmp_path: Path):
+    service = make_service(tmp_path)
+    token = service.login("ADMIN-CODE").token
+    version, body, signature = token.split(".")
+    flipped = ("0" if signature[0] != "0" else "1") + signature[1:]
+    assert service.resolve(f"{version}.{body}.{flipped}") is None
+    assert service.resolve(f"{version}.{body}.deadbeef") is None
+    assert service.resolve("v1.bogus.bogus") is None
+    assert service.resolve("") is None
+
+
+def test_re_login_with_same_code_keeps_previous_tasks(authed_client):
+    """同一个码再次登录，仍能访问此前创建的任务（避免"重登后任务消失"）。"""
+    admin = login(authed_client, "ADMIN-CODE")
+    task = authed_client.post(
+        "/api/v1/tasks/from-url",
+        json={"url": "https://www.bilibili.com/video/BV1VVhk6pEiR"},
+        headers=headers(admin["token"]),
+    ).json()["task_id"]
+
+    again = login(authed_client, "ADMIN-CODE")  # 第二次登录
+    assert again["token"]
+    # 关键：重新登录后仍能看到此前创建的任务（归属由邀请码派生，不随令牌变化）
+    assert authed_client.get(f"/api/v1/tasks/{task}", headers=headers(again["token"])).status_code == 200
 
 
 def test_codes_avoid_easily_confused_characters(tmp_path: Path):
@@ -216,9 +266,14 @@ def test_tasks_are_isolated_between_sessions(authed_client):
     ).json()["codes"]
     shared_code = created_codes[0]["code"]
 
+    # 用两个不同的码代表两个使用者（同一个码下的多次登录共享可见性，见 test_re_login_...）
+    second_code = authed_client.post(
+        "/api/v1/admin/invite-codes",
+        json={"count": 1},
+        headers=headers(admin["token"]),
+    ).json()["codes"][0]["code"]
     first = login(authed_client, shared_code)
-    second = login(authed_client, shared_code)
-    assert first["token"] != second["token"]
+    second = login(authed_client, second_code)
 
     task = authed_client.post(
         "/api/v1/tasks/from-url",
@@ -252,7 +307,10 @@ def test_task_records_owner(authed_client):
         headers=headers(admin["token"]),
     ).json()["task_id"]
     record = authed_client.app_ref.state.task_service.get(task_id)
-    assert record.owner_id == admin["token"]
+    session = authed_client.app_ref.state.invite_service.resolve(admin["token"])
+    assert session is not None
+    # 归属由邀请码派生（不是令牌），这样重新登录后仍能看到自己的任务
+    assert record.owner_id == session.owner_id
 
 
 def test_admin_endpoints_require_admin(authed_client):

@@ -86,7 +86,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
             重新检查
           </Button>
         </div>
-        <p className="mt-5 font-mono text-[12px] text-faint">任务编号：{taskId}</p>
+        <p className="mt-5 break-anywhere font-mono text-[12px] text-faint">任务编号：{taskId}</p>
       </Card>
     );
   }

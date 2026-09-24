@@ -13,6 +13,16 @@
     font-size: 16px;
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
+    /* 移动端护栏：任何长串（URL、任务号、命令）都不应把页面撑宽，
+       否则左右滑动会出现"多余的空白量"（真实反馈） */
+    overflow-x: clip;
+  }
+
+  /* 长串文本一律允许在任意位置断行，避免撑破容器 */
+  code,
+  .break-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   /* 核心操作键盘可达、焦点清晰（用墨色环，强调色只做数据与激活态） */

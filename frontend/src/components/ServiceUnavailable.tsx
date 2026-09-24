@@ -16,7 +16,7 @@ export function ServiceUnavailable({
       <p className="text-[15px] font-medium text-danger">{message}</p>
       <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted">
         请确认后端服务已启动：在项目根目录运行
-        <code className="mx-1 rounded-control bg-sunken px-1.5 py-0.5 font-mono text-[12.5px] text-ink">
+        <code className="mx-1 break-anywhere rounded-control bg-sunken px-1.5 py-0.5 font-mono text-[12.5px] text-ink">
           uvicorn backend.app.main:app --port 8000
         </code>
         ，然后点下面的按钮重试。

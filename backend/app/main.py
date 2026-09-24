@@ -41,7 +41,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app_settings.ensure_directories()
     configure_logging()
 
-    task_service = TaskService(app_settings.tasks_dir)
+    # 阶段 6：对象存储（线上备份业务数据；未配置时为空操作，本地行为不变）
+    storage = build_storage(app_settings)
+    task_service = TaskService(
+        app_settings.tasks_dir, storage=storage, data_dir=app_settings.data_dir
+    )
     media_service = MediaService()
     transcription_service = TranscriptionService(
         app_settings.whisper_model,
@@ -82,9 +86,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         admin_code=app_settings.admin_invite_code,
         valid_days=app_settings.invite_valid_days,
         max_uses=app_settings.invite_max_uses,
+        session_secret=app_settings.session_secret,
+        # 邀请码用量变化后立刻同步到对象存储：否则实例被替换时用量会被恢复成旧值
+        on_change=lambda: storage.enabled
+        and storage.put_file("invite-codes.json", app_settings.invite_store_path),
     )
-    # 阶段 6：对象存储（线上备份业务数据；未配置时为空操作，本地行为不变）
-    storage = build_storage(app_settings)
     backup_service = BackupService(data_dir=app_settings.data_dir, storage=storage)
     backup_scheduler = BackupScheduler(backup_service, app_settings.backup_interval_seconds)
     cleanup_service = CleanupService(

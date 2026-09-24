@@ -62,6 +62,8 @@ class Settings:
     # 阶段 6B：邀请码登录
     #: 管理员码：永久有效、不限次数（只从环境变量读，不落库，不出现在任何接口返回值里）
     admin_invite_code: str = ""
+    #: 会话令牌签名密钥（线上必须配置；缺失时退化为由管理员码派生）
+    session_secret: str = ""
     #: 是否强制登录。None = 按环境判断（APP_ENV=prod 时强制），本地开发默认不强制
     require_auth: bool | None = None
     #: 普通邀请码规则：有效期（天）与可用次数
@@ -181,6 +183,7 @@ def get_settings() -> Settings:
         backup_interval_seconds=max(30, int(os.getenv("BACKUP_INTERVAL_SECONDS", "300"))),
         retention_days=max(0, int(os.getenv("RETENTION_DAYS", "0"))),
         admin_invite_code=os.getenv("ADMIN_INVITE_CODE", "").strip(),
+        session_secret=os.getenv("SESSION_SECRET", "").strip(),
         require_auth=(
             _bool("REQUIRE_AUTH", False) if os.getenv("REQUIRE_AUTH", "").strip() else None
         ),

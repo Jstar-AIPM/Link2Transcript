@@ -90,7 +90,9 @@ export function TranscriptViewer({
                 <span className={cn("timestamp mt-[3px] font-mono text-[12px] text-faint")}>
                   {formatTimestamp(segment.start)}
                 </span>
-                <span className="text-[16px] leading-[1.75] text-body">{segment.text}</span>
+                <span className="break-anywhere text-[16px] leading-[1.75] text-body">
+                  {segment.text}
+                </span>
               </li>
             ))}
           </ol>
