@@ -152,6 +152,24 @@ describe("任务详情：状态与进度", () => {
     expect(texts[1]).toContain("后来的");
   });
 
+  it("空状态文案随阶段变化（检查字幕时不应提模型）", async () => {
+    stubFetch([
+      {
+        status: taskWith({
+          status: "checking_subtitle",
+          stage_message: "正在检查视频字幕",
+          segment_count: 0,
+          cancellable: true,
+        }),
+        segments: segmentsPage([], 0),
+      },
+    ]);
+    const { container } = render(<TaskDetail taskId={TASK_ID} />);
+    await screen.findByText("正在检查视频字幕");
+    expect(container.textContent).toContain("有字幕会直接提取");
+    expect(container.textContent).not.toContain("加载语音识别模型");
+  });
+
   it("还没有片段时给出可解释的空状态，而不是空白", async () => {
     stubFetch([
       {

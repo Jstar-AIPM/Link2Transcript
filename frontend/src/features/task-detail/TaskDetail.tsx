@@ -21,7 +21,7 @@ import { useServiceConfig } from "@/features/service-config/useServiceConfig";
 import { downloadArtifact } from "@/lib/api/download";
 import { useTaskPolling } from "@/features/task-detail/useTaskPolling";
 import { formatDuration, formatPercent } from "@/lib/format";
-import { isTerminal } from "@/lib/api/schemas";
+import { isTerminal, type TaskStatusResponse } from "@/lib/api/schemas";
 
 const FALLBACK_INTERVAL_SECONDS = 2;
 
@@ -32,6 +32,30 @@ function Fact({ label, value, mono = true }: { label: string; value: string; mon
       <dd className={mono ? "font-mono text-[13px] text-body" : "text-[13px] text-body"}>{value}</dd>
     </div>
   );
+}
+
+/**
+ * 空状态文案：必须看清"当前在哪一步"再说，否则会出现
+ * "正在检查字幕，首次转写需要先加载语音识别模型" 这种前后矛盾的提示。
+ *
+ * - 检查字幕 / 下载音频 / 提取音频：还在准备音频，与模型无关；
+ * - 转写中且还没有片段：这里才是真正的"首字延迟"，需要说明模型加载。
+ */
+function emptyHint(status: TaskStatusResponse | null): string {
+  if (!status) return "正在等待任务状态…";
+  if (isTerminal(status.status)) return "没有可展示的内容。";
+  switch (status.status) {
+    case "downloading_audio":
+      return "正在准备音频…（先从视频里取出音轨，还没有文字可显示）";
+    case "extracting_audio":
+      return "正在准备音频…（正在从视频中提取音轨）";
+    case "exporting":
+      return "正在生成文件…";
+    case "transcribing":
+      return "正在等待第一段内容…（首次转写需要先加载语音识别模型，约 1–2 分钟；之后会快很多）";
+    default:
+      return "正在检查视频字幕…（有字幕会直接提取，通常几秒完成）";
+  }
 }
 
 export function TaskDetail({ taskId }: { taskId: string }) {
@@ -192,9 +216,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
 
       <TranscriptViewer
         segments={segments}
-        emptyHint={
-          running ? "正在等待第一段内容…（首次转写需要先加载语音识别模型）" : "没有可展示的内容。"
-        }
+        emptyHint={emptyHint(status)}
         headerActions={
           hasContent ? (
             <button
