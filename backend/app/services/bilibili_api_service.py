@@ -81,6 +81,8 @@ class AudioStream:
     url: str
     size_bytes: int | None
     bandwidth: int
+    #: 同一路音频的备用地址（B 站会给出多个 CDN 节点）
+    backup_urls: tuple[str, ...] = ()
 
 
 class BilibiliApiService:
@@ -170,15 +172,27 @@ class BilibiliApiService:
         destination_dir.mkdir(parents=True, exist_ok=True)
         suffix = ".m4a" if "mp4" in stream.url.lower() or "m4s" in stream.url.lower() else ".audio"
         path = destination_dir / f"audio{suffix}"
-        size = self.session.download(stream.url, path, timeout=self.timeout_seconds * 15)
-        if size <= 0:
-            raise AppError(
-                "AUDIO_DOWNLOAD_FAILED",
-                "未能获取该视频的音频，建议改用本地文件上传",
-                status_code=400,
-            )
-        logger.info("audio_downloaded task_id=%s bytes=%s", task_id, size)
-        return DownloadedAudio(path=path, size_bytes=size)
+
+        # 逐个候选地址重试：实测遇到过某个 CDN 节点的证书已过期（SSL 校验失败），
+        # 换一个节点就能成功。**不关闭证书校验**，只换节点。
+        last_error: Exception | None = None
+        for candidate in (stream.url, *stream.backup_urls):
+            try:
+                size = self.session.download(candidate, path, timeout=self.timeout_seconds * 15)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning("audio_download_retry task_id=%s reason=%s", task_id, type(exc).__name__)
+                continue
+            if size > 0:
+                logger.info("audio_downloaded task_id=%s bytes=%s", task_id, size)
+                return DownloadedAudio(path=path, size_bytes=size)
+        if last_error is not None:
+            logger.warning("audio_download_failed task_id=%s", task_id, exc_info=last_error)
+        raise AppError(
+            "AUDIO_DOWNLOAD_FAILED",
+            "未能获取该视频的音频，建议改用本地文件上传",
+            status_code=400,
+        )
 
     # ------------------------------------------------------------- 内部实现
 
@@ -326,11 +340,17 @@ class BilibiliApiService:
             url = str(item.get("baseUrl") or item.get("base_url") or "").strip()
             if not url:
                 continue
+            backups = tuple(
+                str(candidate).strip()
+                for candidate in (item.get("backupUrl") or item.get("backup_url") or [])
+                if str(candidate).strip()
+            )
             streams.append(
                 AudioStream(
                     url=url,
                     size_bytes=self._to_int(item.get("size")),
                     bandwidth=self._to_int(item.get("bandwidth")) or 0,
+                    backup_urls=backups,
                 )
             )
         if not streams:

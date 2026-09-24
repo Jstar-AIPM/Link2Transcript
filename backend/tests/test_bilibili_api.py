@@ -158,6 +158,45 @@ def test_duration_gate_runs_before_download():
     assert "超过 5 分钟上限" in exc_info.value.message
 
 
+def test_audio_download_falls_back_to_backup_url():
+    """实测：某个 CDN 节点证书过期会 SSL 失败，此时应换备用地址，而不是直接失败。"""
+    playurl = {
+        "code": 0,
+        "data": {
+            "dash": {
+                "audio": [
+                    {
+                        "baseUrl": "https://cdn/bad.m4s",
+                        "backupUrl": ["https://cdn/backup.m4s"],
+                        "bandwidth": 64000,
+                    }
+                ]
+            }
+        },
+    }
+    service = make_service(
+        {"web-interface/view": VIEW, "player/v2": player_with("ai-zh"), "playurl": playurl}
+    )
+    service._wbi_keys = ("a" * 32, "b" * 32)
+
+    attempts: list[str] = []
+
+    def flaky_download(url, destination, timeout=300):
+        attempts.append(url)
+        if "bad" in url:
+            raise OSError("SSLError: certificate has expired")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(b"x" * 512)
+        return 512
+
+    service.session.download = flaky_download  # type: ignore[assignment]
+    downloaded = service.download_audio(
+        "https://www.bilibili.com/video/BV1VVhk6pEiR", Path("/tmp/y"), "t2"
+    )
+    assert attempts == ["https://cdn/bad.m4s", "https://cdn/backup.m4s"]
+    assert downloaded.size_bytes == 512
+
+
 def test_audio_download_picks_smallest_stream_and_signs_request():
     playurl = {
         "code": 0,
