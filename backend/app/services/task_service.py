@@ -5,6 +5,7 @@ import logging
 import os
 import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -88,6 +89,10 @@ class TaskService:
         # 任何实例都还能读到这条任务（否则用户会看到"任务不存在"）。
         self.storage = storage
         self.data_dir = data_dir or tasks_dir.parent
+        # 镜像节流：转写期间进度每秒写一次，若每次都上传对象存储会又慢又贵；
+        # 因此"同一状态内最多每 MIRROR_INTERVAL_SECONDS 上传一次"，状态一变立刻上传。
+        self.mirror_interval_seconds = 30.0
+        self._mirror_state: dict[str, tuple[float, str]] = {}
         self._lock = threading.RLock()
 
     def new_task_id(self) -> str:
@@ -377,10 +382,18 @@ class TaskService:
             return False
         return True
 
-    def _mirror_to_storage(self, target: Path) -> None:
+    def _mirror_to_storage(self, record: TaskRecord, target: Path) -> None:
         """把任务记录同步到对象存储（失败只告警，不影响任务本身）。"""
         if self.storage is None or not getattr(self.storage, "enabled", False):
             return
+        # 兼容两种写法：既有 TaskStatus 枚举，也有历史代码直接赋的字符串
+        status = getattr(record.status, "value", str(record.status))
+        now = time.monotonic()
+        with self._lock:
+            last_at, last_status = self._mirror_state.get(target.stem, (0.0, ""))
+            if status == last_status and now - last_at < self.mirror_interval_seconds:
+                return
+            self._mirror_state[target.stem] = (now, status)
         try:
             self.storage.put_file(f"tasks/{target.stem}.json", target)
         except Exception:  # noqa: BLE001
@@ -401,4 +414,4 @@ class TaskService:
         finally:
             if os.path.exists(temp_name):
                 os.unlink(temp_name)
-        self._mirror_to_storage(target)
+        self._mirror_to_storage(record, target)

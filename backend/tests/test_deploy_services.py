@@ -321,3 +321,37 @@ def test_startup_restores_backup_and_cleans_expired(tmp_path: Path):
     # 启动时已从对象存储恢复；且 30 天前的任务被清理
     assert (data_dir / "tasks" / "t1.json").is_file() or (data_dir / "tasks" / f"{old_id}.json").exists()
     assert not (data_dir / "tasks" / f"{old_id}.json").exists()
+
+
+def test_task_record_mirror_is_throttled_but_always_on_state_change(tmp_path: Path):
+    """任务记录写穿到对象存储：同状态内节流，状态变化立刻上传。"""
+    from backend.app.services.storage_service import LocalStorage
+    from backend.app.services.task_service import TaskService
+
+    data_dir = tmp_path / "data"
+    storage = LocalStorage(tmp_path / "bucket")
+    service = TaskService(data_dir / "tasks", storage=storage, data_dir=data_dir)
+    service.mirror_interval_seconds = 3600.0  # 放大间隔，验证"同状态只传一次"
+
+    task_id = service.new_task_id()
+    service.create(
+        task_id=task_id,
+        original_filename="a.mp3",
+        stored_filename="source.mp3",
+        media_type="audio",
+        content_type="audio/mpeg",
+        size_bytes=1,
+    )
+    assert f"tasks/{task_id}.json" in storage.list_keys("")
+
+    # 同状态内的多次进度写回不应反复上传（这里用文件内容变化来验证是否被覆盖）
+    storage.put_file(f"tasks/{task_id}.json", data_dir / "tasks" / f"{task_id}.json")
+    before = (storage.root / f"tasks/{task_id}.json").read_text(encoding="utf-8")
+    service.set_progress(task_id, segment_count=5, transcribed_seconds=10.0)
+    after = (storage.root / f"tasks/{task_id}.json").read_text(encoding="utf-8")
+    assert before == after, "同状态内的进度写回被节流，不应上传"
+
+    # 状态变化 → 立刻上传
+    service.transition(task_id, TaskStatus.VALIDATING)
+    updated = (storage.root / f"tasks/{task_id}.json").read_text(encoding="utf-8")
+    assert '"status": "validating"' in updated
