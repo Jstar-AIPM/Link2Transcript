@@ -31,6 +31,8 @@ function allowedDevOrigins(): string[] {
 }
 
 const nextConfig: NextConfig = {
+  // 独立部署（veFaaS / 容器）：产出自带最小依赖的 server.js，便于云端直接 node server.js 启动
+  output: "standalone",
   allowedDevOrigins: allowedDevOrigins(),
 
   async rewrites() {

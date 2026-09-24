@@ -98,3 +98,32 @@ Next 16 默认拦截「跨来源」的开发资源（HMR、开发态 chunk），
 颜色/圆角/间距/字号**只能**使用 `src/styles/tokens.css` 里的语义变量，
 页面里不写十六进制值。完整规则与参考来源见
 `开发文档/第四阶段设计基调_视觉参考.md`。
+
+## 部署到 veFaaS（已上线，2026-09-24）
+
+前后端是两个独立应用，复用同一个网关。**前端必须用 standalone 产物**，且产物要放在
+一个不被忽略的目录里（否则打包会把产物内的 `node_modules` 一起排掉，函数启动时报
+`Cannot find module 'next'`）。
+
+```bash
+# 1) 用线上后端地址构建（rewrites 在构建期固化，必须构建时注入）
+cd frontend
+BACKEND_ORIGIN="https://<后端访问地址>" npm run build
+
+# 2) 组装独立产物目录（不进版本控制）
+rm -rf artifact && mkdir -p artifact/.next
+cp -R .next/standalone/. artifact/
+cp -R .next/static artifact/.next/static
+
+# 3) 部署（buildCommand 用 true：产物已在上一步构建好）
+vefaas deploy --buildCommand "true" --outputPath "artifact" \
+  --command "node server.js" --port 3000 --yes
+```
+
+注意事项：
+
+- 部署命令里的 `BACKEND_ORIGIN` 必须是**线上后端地址**，否则同源代理会指向本机；
+- 不要在这个目录放 `.vefaasignore` 排除 `node_modules/`：产物里的 `node_modules`
+  是运行必需的；
+- 若发布报 `Release is in rolling status`，先 `vefaas fn release-record status --id <函数ID>`
+  等它结束，必要时 `vefaas api AbortRelease --FunctionId <函数ID>` 后再重试。

@@ -23,3 +23,6 @@ models/
 
 # veFaaS 部署时生成的本地配置与产物
 .vefaas/
+
+# 前端部署产物（本地构建后上传，不入库）
+frontend/artifact/

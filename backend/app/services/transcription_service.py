@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,9 @@ from typing import Callable
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import TranscriptSegment
+
+
+logger = logging.getLogger(__name__)
 
 
 # 有效语音占比低于此值，即认为内容中没有人声（如纯音乐、环境音、静音文件）。
@@ -33,6 +37,20 @@ class TranscriptionService:
         self.compute_type = compute_type
         self._model = None
         self._model_lock = threading.Lock()
+
+    def warmup(self) -> bool:
+        """预热：把模型加载进内存（首次会下载权重）。
+
+        线上用处很大：国内云访问 HuggingFace 需要镜像，且权重有数百 MB，
+        若不预热，第一个用户要等完整的下载 + 加载时间。返回是否成功（不抛错）。
+        """
+        try:
+            self._get_model()
+            logger.info("transcription_model_ready model=%s", self.model_name)
+            return True
+        except AppError:
+            logger.warning("transcription_model_warmup_failed model=%s", self.model_name)
+            return False
 
     def check_runtime(self) -> None:
         if not self.model_name.strip() or not self.device.strip() or not self.compute_type.strip():
@@ -63,6 +81,15 @@ class TranscriptionService:
                             compute_type=self.compute_type,
                         )
                     except Exception as exc:
+                        # 记录真实原因（类型 + 文本），否则线上只剩一句通用文案无法排查。
+                        # 不打印任何凭据；模型下载地址不含密钥。
+                        logger.warning(
+                            "transcription_model_load_failed model=%s type=%s error=%s",
+                            self.model_name,
+                            type(exc).__name__,
+                            str(exc)[:300],
+                            exc_info=True,
+                        )
                         raise AppError(
                             "TRANSCRIPTION_MODEL_UNAVAILABLE",
                             "语音识别模型加载失败，请检查模型配置或网络",

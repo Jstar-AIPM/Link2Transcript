@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -103,6 +104,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         export_service=export_service,
         download_service=download_service,
         subtitle_service=subtitle_service,
+        # 链接链路的实际实现（B 站 API 或 yt-dlp）
+        platform_media_service=platform_media_service,
         uploads_dir=app_settings.uploads_dir,
         audio_dir=app_settings.audio_dir,
         downloads_dir=app_settings.downloads_dir,
@@ -124,6 +127,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cleanup_service.cleanup_expired()
         backup_scheduler.start()
         credential_service.verify_in_background()
+        if app_settings.warmup_model:
+            # 后台预热模型（不阻塞启动）；权重默认缓存到 HF_HOME（线上指向 /tmp）
+            threading.Thread(
+                target=transcription_service.warmup, name="model-warmup", daemon=True
+            ).start()
         # 有已落盘片段的任务可以接着跑（阶段 3B），不必从零重来；
         # 没有进度的任务沿用阶段 1 行为：标记中断失败。
         is_resumable = (

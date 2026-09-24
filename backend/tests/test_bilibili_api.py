@@ -199,3 +199,28 @@ def test_api_error_maps_to_user_facing_message(user_copy_checker):
         service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
     assert exc_info.value.code == "VIDEO_INFO_FAILED"
     user_copy_checker(exc_info.value.message)
+
+
+# ---------------------------------------------------------------------------
+# 接线检查（这类问题只有真实运行时才暴露：改了解析器但没接到处理器上）
+# ---------------------------------------------------------------------------
+
+
+def test_app_wires_api_backend_into_processor(settings):
+    import dataclasses
+
+    from fastapi.testclient import TestClient
+
+    from backend.app.main import create_app
+    from backend.app.services.download_service import DownloadService
+
+    api_app = create_app(dataclasses.replace(settings, platform_backend="api"))
+    ytdlp_app = create_app(dataclasses.replace(settings, platform_backend="ytdlp"))
+
+    assert isinstance(api_app.state.processor.platform_media_service, BilibiliApiService)
+    assert isinstance(ytdlp_app.state.processor.platform_media_service, DownloadService)
+    # 两个应用都要能正常启动
+    for app in (api_app, ytdlp_app):
+        app.state.processor.submit = lambda task_id: None
+        with TestClient(app):
+            pass
