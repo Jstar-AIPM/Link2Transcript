@@ -13,6 +13,9 @@ from backend.app.api.tasks import router as tasks_router
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
 from backend.app.core.logging import configure_logging
+from backend.app.core.trace import get_trace_id, new_trace_id, set_trace_id
+from backend.app.services.cleanup_service import CleanupService
+from backend.app.services.backup_service import BackupScheduler, BackupService
 from backend.app.services.download_service import DownloadService
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
@@ -20,6 +23,7 @@ from backend.app.services.platform_service import PlatformService
 from backend.app.services.processor import TaskProcessor
 from backend.app.services.segment_store import SegmentStore
 from backend.app.services.startup_service import run_startup_checks
+from backend.app.services.storage_service import build_storage
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
@@ -54,6 +58,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rate_limit_kbps=app_settings.platform_rate_limit_kbps,
     )
     subtitle_service = SubtitleService()
+    # 阶段 6：对象存储（线上备份业务数据；未配置时为空操作，本地行为不变）
+    storage = build_storage(app_settings)
+    backup_service = BackupService(data_dir=app_settings.data_dir, storage=storage)
+    backup_scheduler = BackupScheduler(backup_service, app_settings.backup_interval_seconds)
+    cleanup_service = CleanupService(
+        data_dir=app_settings.data_dir,
+        task_service=task_service,
+        storage=storage,
+        retention_days=app_settings.retention_days,
+        backup_service=backup_service,
+    )
     segment_store = SegmentStore(
         app_settings.outputs_dir, max_segments=app_settings.max_segments_per_task
     )
@@ -71,6 +86,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_media_minutes=app_settings.max_media_minutes,
         max_workers=app_settings.task_max_workers,
         segment_store=segment_store,
+        backup_service=backup_service,
         progress_persist_interval_seconds=app_settings.progress_persist_interval_seconds,
         resume_overlap_seconds=app_settings.resume_overlap_seconds,
     )
@@ -78,6 +94,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         run_startup_checks(app_settings, media_service, transcription_service)
+        # 先把云端已有的业务数据恢复回本地（/tmp 可能是新的实例）
+        backup_service.restore_missing()
+        # 清理超期产物（RETENTION_DAYS=0 时不做任何事）
+        cleanup_service.cleanup_expired()
+        backup_scheduler.start()
         # 有已落盘片段的任务可以接着跑（阶段 3B），不必从零重来；
         # 没有进度的任务沿用阶段 1 行为：标记中断失败。
         is_resumable = (
@@ -100,6 +121,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
             processor.submit(record.task_id)
         yield
+        backup_scheduler.stop()
         processor.shutdown()
 
     app = FastAPI(title="逐字稿提取器", version="0.1.0", lifespan=lifespan)
@@ -113,12 +135,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.subtitle_service = subtitle_service
     app.state.segment_store = segment_store
     app.state.processor = processor
+    app.state.storage = storage
+    app.state.backup_service = backup_service
+    app.state.cleanup_service = cleanup_service
+
+    @app.middleware("http")
+    async def trace_middleware(request: Request, call_next):
+        """给每个请求一个追踪号：写进日志、响应头与错误体。"""
+        set_trace_id(new_trace_id())
+        response = await call_next(request)
+        response.headers["X-Trace-Id"] = get_trace_id()
+        return response
 
     @app.exception_handler(AppError)
     async def handle_app_error(_: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content={"error": {"code": exc.code, "message": exc.message}},
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "trace_id": get_trace_id(),
+                }
+            },
         )
 
     @app.exception_handler(RequestValidationError)
@@ -129,6 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "error": {
                     "code": "VALIDATION_ERROR",
                     "message": "请求参数无效，请检查后重试",
+                    "trace_id": get_trace_id(),
                 }
             },
         )

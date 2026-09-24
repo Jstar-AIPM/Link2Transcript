@@ -48,6 +48,17 @@ class Settings:
     #: 是否允许上传本地文件。线上（veFaaS）同步调用请求体上限 16 MiB，
     #: 与本地 2 GB 上传冲突，因此线上关闭；本地开发默认开启。
     enable_local_upload: bool = True
+    # 阶段 6：备份到对象存储（veFaaS 除 /tmp 外只读且 /tmp 易失）
+    storage_provider: str = "disabled"          # disabled | local | tos
+    storage_local_dir: Path | None = None
+    tos_bucket: str = ""
+    tos_endpoint: str = "https://tos-s3-cn-beijing.volces.com"
+    tos_region: str = "cn-beijing"
+    tos_access_key: str = ""
+    tos_secret_key: str = ""
+    backup_interval_seconds: int = 300
+    # 产物保留期（天）。0 = 不清理（本地开发默认），线上建议 7
+    retention_days: int = 0
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
@@ -59,6 +70,11 @@ class Settings:
     resume_on_startup: bool = True
     resume_overlap_seconds: float = 2.0
     max_segments_per_task: int = 200_000
+
+    @property
+    def is_production(self) -> bool:
+        """线上环境判定：用于强制邀请码登录（阶段 6）。"""
+        return self.app_env.strip().lower() in {"prod", "production"}
 
     @property
     def max_upload_bytes(self) -> int:
@@ -127,6 +143,19 @@ def get_settings() -> Settings:
         task_poll_interval_seconds=int(os.getenv("TASK_POLL_INTERVAL_SECONDS", "2")),
         task_max_workers=max(1, int(os.getenv("TASK_MAX_WORKERS", "1"))),
         enable_local_upload=_bool("ENABLE_LOCAL_UPLOAD", True),
+        storage_provider=os.getenv("STORAGE_PROVIDER", "disabled").strip().lower(),
+        storage_local_dir=(
+            _resolve_data_dir(os.getenv("STORAGE_LOCAL_DIR"))
+            if os.getenv("STORAGE_LOCAL_DIR", "").strip()
+            else None
+        ),
+        tos_bucket=os.getenv("TOS_BUCKET", "").strip(),
+        tos_endpoint=os.getenv("TOS_ENDPOINT", "https://tos-s3-cn-beijing.volces.com").strip(),
+        tos_region=os.getenv("TOS_REGION", "cn-beijing").strip(),
+        tos_access_key=os.getenv("TOS_ACCESS_KEY", "").strip(),
+        tos_secret_key=os.getenv("TOS_SECRET_KEY", "").strip(),
+        backup_interval_seconds=max(30, int(os.getenv("BACKUP_INTERVAL_SECONDS", "300"))),
+        retention_days=max(0, int(os.getenv("RETENTION_DAYS", "0"))),
         max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),

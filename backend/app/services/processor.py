@@ -161,6 +161,7 @@ class TaskProcessor:
         download_service: DownloadService,
         subtitle_service: SubtitleService,
         segment_store: SegmentStore,
+        backup_service=None,
         uploads_dir: Path,
         audio_dir: Path,
         downloads_dir: Path,
@@ -182,6 +183,7 @@ class TaskProcessor:
         self.max_media_seconds = max_media_seconds
         self.max_media_minutes = max_media_minutes
         self.segment_store = segment_store
+        self.backup_service = backup_service
         self.progress_persist_interval_seconds = progress_persist_interval_seconds
         self.resume_overlap_seconds = max(0.0, resume_overlap_seconds)
         self.executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="transcript")
@@ -221,6 +223,7 @@ class TaskProcessor:
                 message=exc.message,
                 internal_type=type(exc).__name__,
             )
+            self._backup_task(task_id)
         except Exception as exc:
             logger.exception(
                 "task_failed_unexpected task_id=%s type=%s duration_seconds=%.3f",
@@ -235,6 +238,7 @@ class TaskProcessor:
                 message="处理失败，请重试。原始文件不会被修改",
                 internal_type=type(exc).__name__,
             )
+            self._backup_task(task_id)
 
     # ------------------------------------------------------- 路径一：本地文件
 
@@ -461,6 +465,16 @@ class TaskProcessor:
         )
         self.task_service.transition(task_id, TaskStatus.SUCCEEDED, artifacts=artifacts)
         self._log_stage(task_id, TaskStatus.EXPORTING, stage_started)
+        self._backup_task(task_id)
+
+    def _backup_task(self, task_id: str) -> None:
+        """任务进入终态后立即备份：不依赖周期，结果不会因实例被回收而丢。"""
+        if self.backup_service is None:
+            return
+        try:
+            self.backup_service.backup_task(task_id)
+        except Exception:  # noqa: BLE001 - 备份失败不能影响任务结果
+            logger.warning("task_backup_failed task_id=%s", task_id, exc_info=True)
 
     def _ensure_duration_within_limit(self, duration_seconds: float | None) -> None:
         if duration_seconds is None or duration_seconds <= self.max_media_seconds:

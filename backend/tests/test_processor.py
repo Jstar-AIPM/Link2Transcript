@@ -149,6 +149,7 @@ def build_processor(
     export_service=None,
     download_service=None,
     segment_store=None,
+    backup_service=None,
     progress_persist_interval_seconds=1.0,
     resume_overlap_seconds=2.0,
 ):
@@ -160,6 +161,7 @@ def build_processor(
         download_service=download_service or StubDownloadService(),
         subtitle_service=SubtitleService(),
         segment_store=segment_store or SegmentStore(settings.outputs_dir),
+        backup_service=backup_service,
         progress_persist_interval_seconds=progress_persist_interval_seconds,
         resume_overlap_seconds=resume_overlap_seconds,
         uploads_dir=settings.uploads_dir,
