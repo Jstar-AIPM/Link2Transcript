@@ -160,6 +160,7 @@ class TaskProcessor:
         export_service: ExportService,
         download_service: DownloadService,
         subtitle_service: SubtitleService,
+        platform_media_service=None,
         segment_store: SegmentStore,
         backup_service=None,
         uploads_dir: Path,
@@ -177,6 +178,8 @@ class TaskProcessor:
         self.export_service = export_service
         self.download_service = download_service
         self.subtitle_service = subtitle_service
+        # 链接链路的实际实现：B 站 API 或 yt-dlp（两者接口一致，处理器不关心是哪一种）
+        self.platform_media_service = platform_media_service or download_service
         self.uploads_dir = uploads_dir
         self.audio_dir = audio_dir
         self.downloads_dir = downloads_dir
@@ -279,7 +282,7 @@ class TaskProcessor:
 
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.CHECKING_SUBTITLE)
-        meta = self.download_service.probe(url)
+        meta = self.platform_media_service.probe(url)
         self.task_service.set_media_duration(task_id, meta.duration_seconds)
         if meta.title:
             self.task_service.set_original_filename(
@@ -296,7 +299,7 @@ class TaskProcessor:
         # 无可用字幕：只下载音频轨，然后复用阶段 1 已验证的转写链路。
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.DOWNLOADING_AUDIO)
-        downloaded = self.download_service.download_audio(
+        downloaded = self.platform_media_service.download_audio(
             url, self.downloads_dir / task_id, task_id
         )
         self.task_service.set_downloaded_bytes(task_id, downloaded.size_bytes)

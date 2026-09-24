@@ -123,7 +123,10 @@ def test_cookie_is_written_to_a_scoped_cookie_file_and_never_logged(tmp_path: Pa
     )
     options = service._base_options()
 
-    assert "http_headers" not in options
+    # 凭据只能走 cookie 文件；http_headers 里不允许出现 Cookie
+    # （阶段 6 起 http_headers 用于浏览器 UA/Referer，缓解机房 IP 被 B 站风控拦截）
+    assert "Cookie" not in (options.get("http_headers") or {})
+    assert "SESSDATA" not in str(options.get("http_headers") or {})
     cookie_file = Path(options["cookiefile"])
     assert cookie_file.is_file()
     content = cookie_file.read_text(encoding="utf-8")
@@ -142,6 +145,7 @@ def test_malformed_cookie_pairs_are_ignored(tmp_path: Path):
     service = DownloadService(
         cookie="SESSDATA=keepme; ; broken ;novalue=; =empty",
         cookie_file_dir=tmp_path / "session",
+        harvest_device_cookies=False,
     )
     assert service._cookie_pairs() == [("SESSDATA", "keepme")]
 
@@ -171,3 +175,53 @@ def test_real_duration_gate_uses_six_hour_limit():
     ok = ProbeStub(probe_info=make_info(duration=5 * 3600), max_media_seconds=360 * 60,
                    max_media_minutes=360)
     assert ok.probe("https://www.bilibili.com/video/BV1BqhB6nEdN").duration_seconds == 5 * 3600
+
+
+# ---------------------------------------------------------------------------
+# 机房 IP 风控缓解：设备 Cookie（buvid3 等）与浏览器头
+# ---------------------------------------------------------------------------
+
+
+def test_device_cookies_are_harvested_into_cookie_file(settings, monkeypatch):
+    """B 站对云 IP 常返回 412；带上首页发放的 buvid3 可显著缓解。
+
+    这里验证：取到的设备 Cookie 会合并进 Netscape cookie 文件，且浏览器头已设置。
+    """
+
+    class FakeCookies:
+        def get(self, name):
+            return {"buvid3": "DEVICE-3", "b_nut": "NUT-1"}.get(name)
+
+    class FakeResponse:
+        cookies = FakeCookies()
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: FakeResponse())
+
+    service = DownloadService(
+        cookie="SESSDATA=secret-value",
+        cookie_file_dir=settings.session_dir,
+        harvest_device_cookies=True,
+    )
+    options = service._base_options()
+
+    content = Path(options["cookiefile"]).read_text(encoding="utf-8")
+    assert "buvid3" in content and "DEVICE-3" in content
+    assert "b_nut" in content
+    assert "SESSDATA" in content
+    assert options["http_headers"]["Referer"] == "https://www.bilibili.com/"
+
+
+def test_device_cookie_failure_is_silent(settings, monkeypatch):
+    """取设备 Cookie 失败时不能影响主流程（行为与之前一致）。"""
+
+    def boom(*args, **kwargs):
+        raise OSError("network down")
+
+    monkeypatch.setattr("requests.get", boom)
+    service = DownloadService(
+        cookie="SESSDATA=x",
+        cookie_file_dir=settings.session_dir,
+        harvest_device_cookies=True,
+    )
+    content = Path(service._base_options()["cookiefile"]).read_text(encoding="utf-8")
+    assert "SESSDATA" in content

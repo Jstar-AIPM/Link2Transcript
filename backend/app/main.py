@@ -17,6 +17,7 @@ from backend.app.core.logging import configure_logging
 from backend.app.core.trace import get_trace_id, new_trace_id, set_trace_id
 from backend.app.services.cleanup_service import CleanupService
 from backend.app.services.backup_service import BackupScheduler, BackupService
+from backend.app.services.bilibili_api_service import BilibiliApiService
 from backend.app.services.credential_service import BilibiliCredentialService
 from backend.app.services.download_service import DownloadService
 from backend.app.services.invite_service import InviteService, bearer_token
@@ -61,6 +62,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rate_limit_kbps=app_settings.platform_rate_limit_kbps,
     )
     subtitle_service = SubtitleService()
+    # 链接链路：默认走 B 站 API（机房 IP 不会被 www.bilibili.com 的 412 风控挡住），
+    # 需要时可切回 yt-dlp（PLATFORM_BACKEND=ytdlp）
+    if app_settings.platform_backend == "ytdlp":
+        platform_media_service = download_service
+    else:
+        platform_media_service = BilibiliApiService(
+            cookie=app_settings.bilibili_cookie,
+            cookie_file_dir=app_settings.session_dir,
+            harvest_device_cookies=True,
+            max_media_seconds=app_settings.max_media_seconds,
+            max_media_minutes=app_settings.max_media_minutes,
+        )
     # 阶段 6：B 站登录态自检（字幕路径依赖它；失效时后台告警，不阻塞启动）
     credential_service = BilibiliCredentialService(app_settings.bilibili_cookie)
     invite_service = InviteService(
@@ -148,6 +161,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.segment_store = segment_store
     app.state.processor = processor
     app.state.invite_service = invite_service
+    app.state.platform_media_service = platform_media_service
     app.state.credential_service = credential_service
     app.state.storage = storage
     app.state.backup_service = backup_service

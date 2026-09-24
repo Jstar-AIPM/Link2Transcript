@@ -67,6 +67,8 @@ class Settings:
     #: 普通邀请码规则：有效期（天）与可用次数
     invite_valid_days: int = 30
     invite_max_uses: int = 20
+    #: 链接链路后端：api（B 站 API，线上默认，机房 IP 不被 HTML 风控影响）/ ytdlp（后备）
+    platform_backend: str = "api"
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
@@ -182,6 +184,7 @@ def get_settings() -> Settings:
         ),
         invite_valid_days=max(1, int(os.getenv("INVITE_VALID_DAYS", "30"))),
         invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
+        platform_backend=os.getenv("PLATFORM_BACKEND", "api").strip().lower(),
         max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from backend.app.core.errors import AppError
 from backend.app.core.messages import video_too_long_message
+from backend.app.services.bilibili_session import BROWSER_HEADERS, BilibiliSession
 
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ VIP_REQUIRED_MESSAGE = (
     "该视频为大会员专享内容，当前只能获取预览片段，无法完整转写。你可以改用本地文件上传"
 )
 PREVIEW_WARNING_TOKENS = ("premium member", "only preview format")
+
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,7 @@ class DownloadService:
         *,
         cookie: str = "",
         cookie_file_dir: Path | None = None,
+        harvest_device_cookies: bool = False,
         proxy: str = "",
         max_media_seconds: float = 180 * 60,
         max_media_minutes: int = 180,
@@ -109,6 +112,12 @@ class DownloadService:
     ) -> None:
         self.cookie = cookie
         self.cookie_file_dir = cookie_file_dir
+        # 统一由 BilibiliSession 负责浏览器头与设备 Cookie（机房 IP 风控缓解）
+        self.session = BilibiliSession(
+            cookie=cookie,
+            cookie_file_dir=cookie_file_dir,
+            harvest_device_cookies=harvest_device_cookies,
+        )
         self.proxy = proxy
         self.max_media_seconds = max_media_seconds
         self.max_media_minutes = max_media_minutes
@@ -200,6 +209,8 @@ class DownloadService:
 
     def _base_options(self) -> dict:
         options: dict = {
+            # 浏览器头：降低被 B 站风控拦掉的概率
+            "http_headers": dict(BROWSER_HEADERS),
             "quiet": True,
             "no_warnings": False,
             "noprogress": True,
@@ -218,7 +229,7 @@ class DownloadService:
         return options
 
     def _ensure_cookie_file(self) -> Path | None:
-        """把环境变量里的 Cookie 转成 yt-dlp 能正确限域的 Netscape cookie 文件。
+        """把凭据（含设备 Cookie）写成 yt-dlp 能正确限域的 Netscape cookie 文件。
 
         文件放在受控目录并设为仅当前用户可读，不进版本控制。
         """
@@ -233,40 +244,18 @@ class DownloadService:
         directory = Path(self.cookie_file_dir)
         directory.mkdir(parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
-        path = directory / self.COOKIE_FILE_NAME
-        content = self._cookie_file_content()
-        try:
-            current = path.read_text(encoding="utf-8") if path.is_file() else None
-            if current != content:
-                path.write_text(content, encoding="utf-8")
-                os.chmod(path, 0o600)
-        except OSError as exc:
+        path = self.session.write_netscape_cookie_file(directory / self.COOKIE_FILE_NAME)
+        if path is None:
             raise AppError(
                 "COOKIE_FILE_WRITE_FAILED",
                 "登录凭据写入失败，请检查数据目录权限",
                 status_code=503,
-            ) from exc
+            )
         return path
 
-    def _cookie_file_content(self) -> str:
-        lines = [
-            "# Netscape HTTP Cookie File",
-            "# 由本项目从 BILIBILI_COOKIE 生成，请勿提交到版本控制或外传",
-        ]
-        for name, value in self._cookie_pairs():
-            lines.append(
-                "\t".join([self.COOKIE_DOMAIN, "TRUE", "/", "TRUE", "0", name, value])
-            )
-        return "\n".join(lines) + "\n"
-
     def _cookie_pairs(self) -> list[tuple[str, str]]:
-        pairs: list[tuple[str, str]] = []
-        for part in self.cookie.split(";"):
-            name, separator, value = part.strip().partition("=")
-            name, value = name.strip(), value.strip()
-            if separator and name and value:
-                pairs.append((name, value))
-        return pairs
+        return self.session.cookie_pairs()
+
 
     def _extract(
         self,
