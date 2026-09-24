@@ -224,3 +224,31 @@ def test_app_wires_api_backend_into_processor(settings):
         app.state.processor.submit = lambda task_id: None
         with TestClient(app):
             pass
+
+
+def test_subtitle_covering_more_than_video_is_rejected():
+    """实测过：接口会返回覆盖 2937s 的内容，而视频只有 903s（是别的视频的字幕）。"""
+    assert BilibiliApiService._validate_subtitle(subtitle_payload(2937.0), duration=903.0) == (
+        False,
+        "beyond_duration(3.25)",
+    )
+
+
+def test_repetitive_subtitle_is_rejected():
+    """实测过：广告横幅被当成字幕（同一句重复几百次）。"""
+    payload = json.dumps(
+        {"body": [{"from": i, "to": i + 1, "content": "[本节目包含UNOVE广告]"} for i in range(50)]}
+    )
+    ok, reason = BilibiliApiService._validate_subtitle(payload, duration=50.0)
+    assert ok is False
+    assert reason.startswith("repetitive")
+
+
+def test_good_subtitle_passes_validation():
+    ok, reason = BilibiliApiService._validate_subtitle(subtitle_payload(902.0), duration=903.0)
+    assert ok is True and reason == ""
+
+
+def test_normal_subtitle_without_duration_is_accepted():
+    ok, _ = BilibiliApiService._validate_subtitle(subtitle_payload(100.0), duration=None)
+    assert ok is True

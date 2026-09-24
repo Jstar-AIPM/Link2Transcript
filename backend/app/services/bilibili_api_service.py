@@ -63,9 +63,17 @@ WBI_KEY_TTL_SECONDS = 1800
 # 如果直接采用，就会出现"只覆盖前半段，却当成完整逐字稿"的情况 —— 这正是项目禁止的
 # 「假装成功」。因此这里做两件事：① 重试几次取最长；② 覆盖率不达标就不要这条字幕，
 # 由编排层降级为语音转写（慢但完整）。
+# 校验规则来自真实观测（同一视频连取 5 次，B 站会随机返回别的内容）：
+#   正确：377 条 / 覆盖 902s（视频 903s）、唯一文本 100%
+#   错误：824 条 / 覆盖 1589s（超过视频时长，内容是广告横幅，唯一率 ~0%）
+#         134 条 / 覆盖 225s、94 条 / 覆盖 182s（明显偏短，内容是别的视频）
+#         55 条 / 覆盖 275s（视频只有 123s）
+# 因此只接受「覆盖率贴近视频时长 + 文本基本不重复」的结果，否则降级为语音转写。
 SUBTITLE_MIN_COVERAGE_RATIO = 0.9
-SUBTITLE_FETCH_ATTEMPTS = 2
-SUBTITLE_RETRY_DELAY_SECONDS = 1.5
+SUBTITLE_MAX_COVERAGE_RATIO = 1.1
+SUBTITLE_MIN_UNIQUE_RATIO = 0.6
+SUBTITLE_FETCH_ATTEMPTS = 3
+SUBTITLE_RETRY_DELAY_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -227,29 +235,64 @@ class BilibiliApiService:
         return subtitles
 
     def _fetch_longest_subtitle(self, subtitle_url: str, *, duration: float | None) -> str:
-        """取覆盖最全的一份字幕；覆盖率不达标则返回空字符串（触发降级）。"""
-        best_payload = ""
-        best_coverage = 0.0
+        """取一份**通过校验**的字幕；多次尝试都拿不到就返回空字符串（触发降级转写）。
+
+        B 站的 AI 字幕接口在同一视频上会随机返回不完整甚至**别的视频**的内容
+        （真实观测，见文件头注释），所以这里必须校验，而不是"拿到就用"。
+        """
         for attempt in range(SUBTITLE_FETCH_ATTEMPTS):
             try:
                 payload = self.session.get_text(subtitle_url, timeout=self.timeout_seconds)
             except Exception:  # noqa: BLE001
                 logger.info("subtitle_fetch_failed attempt=%s", attempt + 1)
                 payload = ""
-            coverage = self._subtitle_coverage(payload)
-            if coverage >= best_coverage:
-                best_payload, best_coverage = payload, coverage
-            if duration is None or coverage >= duration * SUBTITLE_MIN_COVERAGE_RATIO:
-                return best_payload
+            ok, reason = self._validate_subtitle(payload, duration=duration)
+            if ok:
+                return payload
             logger.info(
-                "subtitle_incomplete attempt=%s coverage=%.1fs duration=%.1fs",
+                "subtitle_rejected attempt=%s reason=%s duration=%s",
                 attempt + 1,
-                coverage,
+                reason,
                 duration,
             )
             if attempt < SUBTITLE_FETCH_ATTEMPTS - 1:
                 time.sleep(SUBTITLE_RETRY_DELAY_SECONDS)
         return ""
+
+    @classmethod
+    def _validate_subtitle(cls, payload: str, *, duration: float | None) -> tuple[bool, str]:
+        """判断一份字幕是否可信。返回 ``(是否可用, 不可用原因)``。"""
+        if not payload or not payload.strip():
+            return False, "empty"
+        coverage = cls._subtitle_coverage(payload)
+        if coverage <= 0:
+            return False, "unparsable"
+        if duration and duration > 0:
+            ratio = coverage / duration
+            if ratio < SUBTITLE_MIN_COVERAGE_RATIO:
+                return False, f"too_short({ratio:.2f})"
+            if ratio > SUBTITLE_MAX_COVERAGE_RATIO:
+                # 覆盖时长超过视频本身 → 几乎可以确定拿到了别的视频的字幕
+                return False, f"beyond_duration({ratio:.2f})"
+        unique_ratio = cls._subtitle_unique_ratio(payload)
+        if unique_ratio < SUBTITLE_MIN_UNIQUE_RATIO:
+            # 同一句反复出现（实测为广告横幅被当成字幕）
+            return False, f"repetitive({unique_ratio:.2f})"
+        return True, ""
+
+    @staticmethod
+    def _subtitle_unique_ratio(payload: str) -> float:
+        import json
+
+        try:
+            body = (json.loads(payload) or {}).get("body") or []
+        except (TypeError, ValueError):
+            return 0.0
+        texts = [str(item.get("content") or "").strip() for item in body if isinstance(item, dict)]
+        texts = [text for text in texts if text]
+        if not texts:
+            return 0.0
+        return len(set(texts)) / len(texts)
 
     @staticmethod
     def _subtitle_coverage(payload: str) -> float:
