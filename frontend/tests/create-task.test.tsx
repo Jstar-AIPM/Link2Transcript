@@ -198,6 +198,23 @@ describe("线上关闭本地上传时（只支持链接）", () => {
   });
 });
 
+describe("B 站登录态失效时", () => {
+  it("链接模式下明确提示会降级为语音转写（避免用户以为卡住）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({ ...(samples.config as object), bilibili_login: "invalid" }),
+      ),
+    );
+
+    render(<CreateTaskPanel />);
+    fireEvent.click(await screen.findByRole("tab", { name: "粘贴 B 站链接" }));
+
+    await screen.findByText(/当前字幕提取不可用/);
+    expect(document.body.textContent).toContain("链接任务会改用语音转写");
+  });
+});
+
 describe("服务不可用", () => {
   it("读不到配置时给出重试入口并禁用提交", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));

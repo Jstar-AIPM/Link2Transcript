@@ -8,6 +8,7 @@
  *    只有网络层失败才使用前端兜底文案；
  * 4. 单次请求 30 秒超时（阶段 3 实测：机器高负载时接口可能十几秒才返回）。
  */
+import { clearToken, readToken } from "@/lib/session";
 import {
   apiErrorEnvelopeSchema,
   publicConfigSchema,
@@ -20,6 +21,9 @@ import {
   type TaskCreated,
   type TaskStatusResponse,
   type TranscriptResult,
+  type SessionResponse,
+  sessionResponseSchema,
+  loginRequestSchema,
 } from "./schemas";
 import type { z } from "zod";
 
@@ -34,12 +38,15 @@ const MALFORMED_FALLBACK_MESSAGE = "服务返回的数据无法识别，请稍�
 export class ApiError extends Error {
   readonly code: string;
   readonly status: number;
+  /** 后端返回的追踪号：用户报错时报这个编号，便于在日志里定位 */
+  readonly traceId?: string;
 
-  constructor(code: string, message: string, status: number) {
+  constructor(code: string, message: string, status: number, traceId?: string) {
     super(message);
     this.name = "ApiError";
     this.code = code;
     this.status = status;
+    this.traceId = traceId;
   }
 }
 
@@ -62,12 +69,17 @@ async function request<T>(
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort);
 
+  const token = readToken();
   let response: Response;
   try {
     response = await fetch(`${API_PREFIX}${path}`, {
       method,
       body,
-      headers,
+      headers: {
+        ...(headers ?? {}),
+        // 邀请码登录后的会话令牌（未登录时为空，由后端决定是否必需）
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       signal: controller.signal,
     });
   } catch (error) {
@@ -85,7 +97,10 @@ async function request<T>(
   if (!response.ok) {
     const envelope = apiErrorEnvelopeSchema.safeParse(raw);
     if (envelope.success) {
-      throw new ApiError(envelope.data.error.code, envelope.data.error.message, response.status);
+      const { code, message, trace_id } = envelope.data.error;
+      // 会话失效：立刻清掉本地令牌，让界面回到登录页
+      if (response.status === 401) clearToken();
+      throw new ApiError(code, message, response.status, trace_id);
     }
     throw new ApiError("UNEXPECTED_ERROR", MALFORMED_FALLBACK_MESSAGE, response.status);
   }
@@ -98,9 +113,23 @@ async function request<T>(
 }
 
 export const api = {
-  /** 公开配置：上传上限、轮询间隔、时长上限（用于页面提示，不参与业务判断） */
+  /** 公开配置：上传上限、轮询间隔、时长上限、是否需要登录（用于界面提示） */
   getConfig(): Promise<PublicConfig> {
     return request("/config", publicConfigSchema);
+  },
+
+  /** 用邀请码换取会话令牌 */
+  login(code: string): Promise<SessionResponse> {
+    return request("/auth/login", sessionResponseSchema, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(loginRequestSchema.parse({ code })),
+    });
+  },
+
+  /** 校验当前会话是否仍然有效 */
+  me(): Promise<SessionResponse> {
+    return request("/auth/me", sessionResponseSchema);
   },
 
   /** 按链接创建任务（B 站） */

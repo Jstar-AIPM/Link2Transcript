@@ -98,7 +98,26 @@ export const publicConfigSchema = z.object({
   max_media_minutes: z.number(),
   /** 线上环境不支持本地上传（平台请求体上限），此时前端隐藏上传入口 */
   enable_local_upload: z.boolean(),
+  /** 是否强制邀请码登录（线上为 true） */
+  require_auth: z.boolean(),
+  /**
+   * B 站登录态：valid / invalid / unknown / not_configured。
+   * invalid 表示字幕路径已降级为语音转写（更慢），界面上要给出说明。
+   */
+  bilibili_login: z.enum(["valid", "invalid", "unknown", "not_configured"]),
 });
+
+export const loginRequestSchema = z.object({
+  code: z.string().min(1).max(128),
+});
+
+export const sessionResponseSchema = z.object({
+  token: z.string(),
+  expires_at: z.string(),
+  is_admin: z.boolean(),
+  remaining_uses: z.number().nullable(),
+});
+export type SessionResponse = z.infer<typeof sessionResponseSchema>;
 export type PublicConfig = z.infer<typeof publicConfigSchema>;
 
 export const transcriptResultSchema = z.object({
@@ -121,5 +140,10 @@ export type TranscriptResult = z.infer<typeof transcriptResultSchema>;
 
 /** 后端统一错误结构：{ error: { code, message } } */
 export const apiErrorEnvelopeSchema = z.object({
-  error: z.object({ code: z.string(), message: z.string() }),
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+    /** 追踪号：用户报错时报这个编号，便于在日志里定位（阶段 6 新增） */
+    trace_id: z.string().optional(),
+  }),
 });

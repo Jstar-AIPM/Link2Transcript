@@ -9,6 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from backend.app.api.auth import router as auth_router
 from backend.app.api.tasks import router as tasks_router
 from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
@@ -16,7 +17,9 @@ from backend.app.core.logging import configure_logging
 from backend.app.core.trace import get_trace_id, new_trace_id, set_trace_id
 from backend.app.services.cleanup_service import CleanupService
 from backend.app.services.backup_service import BackupScheduler, BackupService
+from backend.app.services.credential_service import BilibiliCredentialService
 from backend.app.services.download_service import DownloadService
+from backend.app.services.invite_service import InviteService, bearer_token
 from backend.app.services.export_service import ExportService
 from backend.app.services.media_service import MediaService
 from backend.app.services.platform_service import PlatformService
@@ -58,6 +61,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rate_limit_kbps=app_settings.platform_rate_limit_kbps,
     )
     subtitle_service = SubtitleService()
+    # 阶段 6：B 站登录态自检（字幕路径依赖它；失效时后台告警，不阻塞启动）
+    credential_service = BilibiliCredentialService(app_settings.bilibili_cookie)
+    invite_service = InviteService(
+        app_settings.invite_store_path,
+        admin_code=app_settings.admin_invite_code,
+        valid_days=app_settings.invite_valid_days,
+        max_uses=app_settings.invite_max_uses,
+    )
     # 阶段 6：对象存储（线上备份业务数据；未配置时为空操作，本地行为不变）
     storage = build_storage(app_settings)
     backup_service = BackupService(data_dir=app_settings.data_dir, storage=storage)
@@ -99,6 +110,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # 清理超期产物（RETENTION_DAYS=0 时不做任何事）
         cleanup_service.cleanup_expired()
         backup_scheduler.start()
+        credential_service.verify_in_background()
         # 有已落盘片段的任务可以接着跑（阶段 3B），不必从零重来；
         # 没有进度的任务沿用阶段 1 行为：标记中断失败。
         is_resumable = (
@@ -135,14 +147,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.subtitle_service = subtitle_service
     app.state.segment_store = segment_store
     app.state.processor = processor
+    app.state.invite_service = invite_service
+    app.state.credential_service = credential_service
     app.state.storage = storage
     app.state.backup_service = backup_service
     app.state.cleanup_service = cleanup_service
 
+    PUBLIC_PATHS = {"/api/v1/auth/login", "/api/v1/config"}
+
     @app.middleware("http")
-    async def trace_middleware(request: Request, call_next):
-        """给每个请求一个追踪号：写进日志、响应头与错误体。"""
+    async def trace_and_auth_middleware(request: Request, call_next):
+        """追踪号 + 会话解析（是否强制登录由配置决定）。
+
+        这里只做"解析并放进 request.state"，具体某个接口要不要求登录由接口自己声明：
+        这样"公开接口"与"需登录接口"的边界写在路由旁边，一眼可见。
+        """
         set_trace_id(new_trace_id())
+        session = invite_service.resolve(bearer_token(request.headers.get("Authorization")))
+        request.state.session = session
+
+        path = request.url.path
+        needs_auth = (
+            app_settings.auth_required
+            and path.startswith("/api/v1/")
+            and path not in PUBLIC_PATHS
+        )
+        if needs_auth and session is None:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "error": {
+                        "code": "AUTH_REQUIRED",
+                        "message": "请先输入邀请码进入",
+                        "trace_id": get_trace_id(),
+                    }
+                },
+                headers={"X-Trace-Id": get_trace_id()},
+            )
+
         response = await call_next(request)
         response.headers["X-Trace-Id"] = get_trace_id()
         return response
@@ -173,6 +215,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             },
         )
 
+    app.include_router(auth_router)
     app.include_router(tasks_router)
     static_dir = Path(__file__).resolve().parent / "static"
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

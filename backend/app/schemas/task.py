@@ -6,7 +6,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 class TaskStatus(StrEnum):
@@ -137,6 +137,8 @@ class TaskRecord(BaseModel):
     segment_count: int = Field(default=0, ge=0)
     resumed_count: int = Field(default=0, ge=0)
     partial_result_available: bool = False
+    #: 任务归属（阶段 6）：邀请码登录后写入会话标识；v1–v3 的历史记录为 None
+    owner_id: str | None = None
     error: TaskError | None = None
     artifacts: TaskArtifacts = Field(default_factory=TaskArtifacts)
 
@@ -174,6 +176,36 @@ class TaskStatusResponse(BaseModel):
     cancellable: bool = False
     error: TaskError | None
     artifacts: dict[str, str | None]
+
+
+class LoginRequest(BaseModel):
+    code: str = Field(max_length=128)
+
+
+class SessionResponse(BaseModel):
+    token: str
+    expires_at: datetime
+    is_admin: bool
+    #: 该邀请码剩余可用次数；管理员码为 None（不限次）
+    remaining_uses: int | None = None
+
+
+class InviteCodeSummary(BaseModel):
+    code: str
+    max_uses: int
+    uses: int
+    created_at: datetime
+    expires_at: datetime
+    note: str = ""
+
+
+class CreateInviteCodesRequest(BaseModel):
+    count: int = Field(default=1, ge=1, le=20)
+    note: str = Field(default="", max_length=64)
+
+
+class CreateInviteCodesResponse(BaseModel):
+    codes: list[InviteCodeSummary]
 
 
 class SegmentItem(BaseModel):

@@ -59,6 +59,14 @@ class Settings:
     backup_interval_seconds: int = 300
     # 产物保留期（天）。0 = 不清理（本地开发默认），线上建议 7
     retention_days: int = 0
+    # 阶段 6B：邀请码登录
+    #: 管理员码：永久有效、不限次数（只从环境变量读，不落库，不出现在任何接口返回值里）
+    admin_invite_code: str = ""
+    #: 是否强制登录。None = 按环境判断（APP_ENV=prod 时强制），本地开发默认不强制
+    require_auth: bool | None = None
+    #: 普通邀请码规则：有效期（天）与可用次数
+    invite_valid_days: int = 30
+    invite_max_uses: int = 20
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
@@ -73,8 +81,20 @@ class Settings:
 
     @property
     def is_production(self) -> bool:
-        """线上环境判定：用于强制邀请码登录（阶段 6）。"""
+        """线上环境判定（APP_ENV=prod/production）。"""
         return self.app_env.strip().lower() in {"prod", "production"}
+
+    @property
+    def auth_required(self) -> bool:
+        """是否强制邀请码登录：显式配置优先，否则线上默认强制、本地默认不强制。"""
+        if self.require_auth is not None:
+            return self.require_auth
+        return self.is_production
+
+    @property
+    def invite_store_path(self) -> Path:
+        """邀请码与会话的持久化文件（随业务数据一起备份到对象存储）。"""
+        return self.data_dir / "invite-codes.json"
 
     @property
     def max_upload_bytes(self) -> int:
@@ -156,6 +176,12 @@ def get_settings() -> Settings:
         tos_secret_key=os.getenv("TOS_SECRET_KEY", "").strip(),
         backup_interval_seconds=max(30, int(os.getenv("BACKUP_INTERVAL_SECONDS", "300"))),
         retention_days=max(0, int(os.getenv("RETENTION_DAYS", "0"))),
+        admin_invite_code=os.getenv("ADMIN_INVITE_CODE", "").strip(),
+        require_auth=(
+            _bool("REQUIRE_AUTH", False) if os.getenv("REQUIRE_AUTH", "").strip() else None
+        ),
+        invite_valid_days=max(1, int(os.getenv("INVITE_VALID_DAYS", "30"))),
+        invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
         max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),

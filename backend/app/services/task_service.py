@@ -102,6 +102,7 @@ class TaskService:
         platform: Platform = Platform.LOCAL,
         source_url: str | None = None,
         resolved_url: str | None = None,
+        owner_id: str | None = None,
     ) -> TaskRecord:
         now = datetime.now().astimezone()
         record = TaskRecord(
@@ -111,6 +112,7 @@ class TaskService:
             platform=platform,
             source_url=source_url,
             resolved_url=resolved_url,
+            owner_id=owner_id,
             original_filename=original_filename,
             stored_filename=stored_filename,
             media_type=media_type,

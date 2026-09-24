@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 
 #: 备份范围（键前缀与本地子目录一一对应）
 BACKUP_DIRS = ("tasks", "outputs")
+#: 除目录外还要备份的顶层文件（邀请码与会话记录同样属于业务数据）
+BACKUP_FILES = ("invite-codes.json",)
 #: 单个文件超过这个大小就不备份（逐字稿产物是文本，正常远小于它）
 MAX_BACKUP_FILE_BYTES = 32 * 1024 * 1024
 
@@ -96,6 +98,17 @@ class BackupService:
         if not self.storage.enabled:
             return 0
         restored = 0
+        for name in BACKUP_FILES:
+            target = self.data_dir / name
+            if target.exists():
+                continue
+            try:
+                if self.storage.get_file(name, target):
+                    restored += 1
+                    self._mark_synced(name, target)
+            except Exception:  # noqa: BLE001
+                logger.warning("backup_restore_failed key=%s", name, exc_info=True)
+
         for directory in BACKUP_DIRS:
             try:
                 keys = self.storage.list_keys(prefix=f"{directory}/")
@@ -119,6 +132,12 @@ class BackupService:
     # ------------------------------------------------------------------ 内部
 
     def _iter_business_files(self, task_id: str | None = None):
+        # 邀请码/会话文件与任务无关，只在全量备份时处理
+        if task_id is None:
+            for name in BACKUP_FILES:
+                path = self.data_dir / name
+                if path.is_file():
+                    yield name, path
         for directory in BACKUP_DIRS:
             base = self.data_dir / directory
             if not base.is_dir():

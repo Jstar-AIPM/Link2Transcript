@@ -35,6 +35,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 
 
+def _owner_id(request: Request) -> str | None:
+    """当前会话的任务归属标识；本地未强制登录时为 None（历史行为）。"""
+    session = getattr(request.state, "session", None)
+    return session.owner_id if session is not None else None
+
+
 def _safe_display_filename(raw_filename: str | None) -> str:
     if not raw_filename:
         raise AppError("MISSING_FILE", "请选择一个音频或视频文件")
@@ -44,9 +50,26 @@ def _safe_display_filename(raw_filename: str | None) -> str:
     return normalized
 
 
-def _artifact_path(request: Request, task_id: str, kind: str) -> tuple[Path, str]:
+def _owned_task(request: Request, task_id: str) -> TaskRecord:
+    """取出任务并校验归属（阶段 6B）。
+
+    强制登录时：任务必须有 owner_id 且与当前会话一致，否则 403。
+    本地开发（未强制登录）时不做限制，行为与阶段 1–5 一致。
+    """
     task_service = request.app.state.task_service
     record = task_service.get(task_id)
+    if not request.app.state.settings.auth_required:
+        return record
+    session = getattr(request.state, "session", None)
+    if session is None:
+        raise AppError("AUTH_REQUIRED", "请先输入邀请码进入", status_code=401)
+    if record.owner_id != session.owner_id:
+        raise AppError("TASK_FORBIDDEN", "无权访问该任务", status_code=403)
+    return record
+
+
+def _artifact_path(request: Request, task_id: str, kind: str) -> tuple[Path, str]:
+    record = _owned_task(request, task_id)
     if record.status != TaskStatus.SUCCEEDED:
         raise AppError("RESULT_NOT_READY", "逐字稿尚未生成", status_code=409)
     raw_path = getattr(record.artifacts, kind, None)
@@ -161,6 +184,7 @@ async def create_task(request: Request, file: UploadFile = File(...)) -> TaskCre
             media_type=media_type,
             content_type=file.content_type,
             size_bytes=size_bytes,
+            owner_id=_owner_id(request),
         )
     except AppError:
         shutil.rmtree(upload_dir, ignore_errors=True)
@@ -204,6 +228,7 @@ def create_task_from_url(
         platform=source.platform,
         source_url=source.original_url,
         resolved_url=source.url,
+        owner_id=_owner_id(request),
     )
     request.app.state.processor.submit(task_id)
     return TaskCreatedResponse(task_id=record.task_id, status=record.status)
@@ -211,7 +236,7 @@ def create_task_from_url(
 
 @router.get("/tasks/{task_id}", response_model=TaskStatusResponse)
 def get_task(request: Request, task_id: UUID) -> TaskStatusResponse:
-    return _status_response(request, request.app.state.task_service.get(str(task_id)))
+    return _status_response(request, _owned_task(request, str(task_id)))
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskStatusResponse)
@@ -222,6 +247,7 @@ def cancel_task(request: Request, task_id: UUID) -> TaskStatusResponse:
     已落盘的部分结果保留，但不生成可下载的成功产物。
     """
     task_service = request.app.state.task_service
+    _owned_task(request, str(task_id))
     record = task_service.request_cancel(str(task_id))
     # 取消响应里的进度要和磁盘对齐：用户下一秒就能读到已生成的内容。
     # （进度写回是按秒节流的，而工作线程要到下一个检查点才停止）
@@ -242,7 +268,7 @@ def get_task_segments(
 
     复用既有轮询：前端带上拉到的位置 ``after``，只取新增部分，避免长内容重复传输。
     """
-    record = request.app.state.task_service.get(str(task_id))
+    record = _owned_task(request, str(task_id))
     segments, total = _task_segments(request, record, after=after, limit=limit)
     next_after = after + len(segments)
     return TaskSegmentsResponse(
@@ -299,11 +325,15 @@ def download_txt(request: Request, task_id: UUID) -> FileResponse:
 
 
 @router.get("/config")
-def get_public_config(request: Request) -> dict[str, int | bool]:
+def get_public_config(request: Request) -> dict[str, int | bool | str]:
     settings = request.app.state.settings
     return {
         "max_upload_mb": settings.max_upload_mb,
         "task_poll_interval_seconds": settings.task_poll_interval_seconds,
         "max_media_minutes": settings.max_media_minutes,
         "enable_local_upload": settings.enable_local_upload,
+        "require_auth": settings.auth_required,
+        # B 站登录态：valid / invalid / unknown / not_configured
+        # 失效时前端提示「链接任务会改用语音转写」，避免用户误以为卡住
+        "bilibili_login": request.app.state.credential_service.status,
     }

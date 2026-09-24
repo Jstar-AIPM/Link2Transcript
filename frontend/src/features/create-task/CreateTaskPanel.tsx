@@ -49,6 +49,9 @@ export function CreateTaskPanel() {
   // 线上环境关闭本地上传（平台请求体上限 16 MiB）；配置未知时先按可用处理，避免误隐藏
   const uploadEnabled =
     configState.kind === "ready" ? configState.config.enable_local_upload : true;
+  // 字幕路径依赖 B 站登录态；失效时会降级为语音转写（明显更慢），要提前说明
+  const subtitleUnavailable =
+    configState.kind === "ready" && configState.config.bilibili_login === "invalid";
   /** 不支持上传时，界面与提交都退化为链接模式 */
   const effectiveMode: Mode = uploadEnabled ? mode : "url";
   const busy = submit.kind === "uploading" || submit.kind === "creating";
@@ -202,6 +205,12 @@ export function CreateTaskPanel() {
                 }}
                 className="mt-1.5 h-11 w-full rounded-control border border-line bg-canvas px-3 text-[15px] text-ink placeholder:text-faint focus:border-line-strong"
               />
+              {subtitleUnavailable ? (
+                <p className="mt-2 border-l-2 border-warn pl-3 text-[13px] leading-relaxed text-warn">
+                  当前字幕提取不可用（服务端登录态已失效），链接任务会改用语音转写，
+                  耗时明显更长。
+                </p>
+              ) : null}
               <p className="mt-2 text-[13px] leading-relaxed text-muted">
                 支持单个视频链接。多 P 视频请粘贴某一个分集的链接。
                 {maxMediaMinutes && maxMediaMinutes > 0

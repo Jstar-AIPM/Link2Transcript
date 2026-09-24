@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/Card";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { RecentTaskLink } from "@/components/RecentTaskLink";
 import { CreateTaskPanel } from "@/features/create-task/CreateTaskPanel";
+import { HomeGate } from "@/features/auth/HomeGate";
 
 const STEPS: Array<[string, string, string]> = [
   ["01", "提交内容", "上传音频/视频，或粘贴 B 站视频链接"],
@@ -52,7 +53,9 @@ export default function HomePage() {
             </div>
 
             <div className="mt-14 grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-7 max-[900px]:grid-cols-1 max-[900px]:gap-4 max-[900px]:mt-9">
-              <CreateTaskPanel />
+              <HomeGate>
+                <CreateTaskPanel />
+              </HomeGate>
 
               <div className="flex flex-col gap-5">
                 <Card className="px-6 pt-5 pb-2">

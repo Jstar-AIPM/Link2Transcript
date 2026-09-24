@@ -3,7 +3,9 @@
     "max_upload_mb": 2048,
     "task_poll_interval_seconds": 2,
     "max_media_minutes": 360,
-    "enable_local_upload": true
+    "enable_local_upload": true,
+    "require_auth": false,
+    "bilibili_login": "valid"
   },
   "status": {
     "task_id": "00000000-0000-4000-8000-000000000001",

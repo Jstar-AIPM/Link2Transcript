@@ -195,8 +195,9 @@ describe("任务详情：状态与进度", () => {
     await screen.findByText("逐字稿已生成");
     expect(container.textContent).toContain("已完成");
     expect(container.textContent).toContain("总耗时");
-    expect(screen.getByRole("link", { name: "下载 Markdown" })).toBeDefined();
-    expect(screen.getByRole("link", { name: "下载 TXT" })).toBeDefined();
+    // 阶段 6B：下载改为带鉴权的按钮（令牌放请求头，不进 URL）
+    expect(screen.getByRole("button", { name: "下载 Markdown" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "下载 TXT" })).toBeDefined();
     // 终态不再显示取消入口
     expect(screen.queryByRole("button", { name: "取消任务" })).toBeNull();
   });
@@ -226,7 +227,7 @@ describe("任务详情：失败与取消", () => {
     expect(screen.getByText("失败前的内容")).toBeDefined();
     expect(screen.getByRole("link", { name: "重新发起任务" })).toBeDefined();
     // 失败不提供下载
-    expect(screen.queryByRole("link", { name: "下载 Markdown" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "下载 Markdown" })).toBeNull();
   });
 
   it("取消任务需要二次确认，确认后调用后端并显示已取消", async () => {

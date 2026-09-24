@@ -18,6 +18,7 @@ import { Button, buttonClass } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useServiceConfig } from "@/features/service-config/useServiceConfig";
+import { downloadArtifact } from "@/lib/api/download";
 import { useTaskPolling } from "@/features/task-detail/useTaskPolling";
 import { formatDuration, formatPercent } from "@/lib/format";
 import { isTerminal } from "@/lib/api/schemas";
@@ -44,6 +45,17 @@ export function TaskDetail({ taskId }: { taskId: string }) {
     useTaskPolling(taskId, interval);
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [copyState, setCopyState] = useState<"idle" | "ok" | "fail">("idle");
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+
+  /** 带鉴权下载：令牌放在请求头里，不放进 URL */
+  const saveArtifact = async (url: string, filename: string) => {
+    setDownloadError(null);
+    try {
+      await downloadArtifact(url, filename);
+    } catch {
+      setDownloadError("下载失败，请稍后重试");
+    }
+  };
 
   /** 复制全文：只在用户点击时才读剪贴板 API（无权限/不支持时给中文提示） */
   const copyTranscript = async () => {
@@ -239,14 +251,22 @@ export function TaskDetail({ taskId }: { taskId: string }) {
       ) : null}
 
       {status?.status === "succeeded" && status.artifacts.markdown ? (
-        <div className="mt-6 flex flex-wrap gap-3 border-t border-line pt-5">
-          <a href={status.artifacts.markdown} className={buttonClass("primary")}>
+        <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-line pt-5">
+          <Button
+            onClick={() => void saveArtifact(status.artifacts.markdown as string, "transcript.md")}
+          >
             下载 Markdown
-          </a>
+          </Button>
           {status.artifacts.txt ? (
-            <a href={status.artifacts.txt} className={buttonClass("ghost")}>
+            <Button
+              variant="ghost"
+              onClick={() => void saveArtifact(status.artifacts.txt as string, "transcript.txt")}
+            >
               下载 TXT
-            </a>
+            </Button>
+          ) : null}
+          {downloadError ? (
+            <span className="text-[13px] text-danger">{downloadError}</span>
           ) : null}
         </div>
       ) : null}
