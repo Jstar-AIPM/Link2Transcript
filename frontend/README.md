@@ -123,7 +123,8 @@ vefaas deploy --buildCommand "true" --outputPath "artifact" \
 注意事项：
 
 - 部署命令里的 `BACKEND_ORIGIN` 必须是**线上后端地址**，否则同源代理会指向本机；
-- 不要在这个目录放 `.vefaasignore` 排除 `node_modules/`：产物里的 `node_modules`
-  是运行必需的；
+- **不要在 `.vefaasignore` 里排除 `node_modules`**：产物里的 `node_modules` 是运行必需的。
+  （veFaaS CLI 会自己生成一个默认忽略文件，它不含 `node_modules`，可以保留。
+  我们最初手写的那份含 `node_modules/`，是线上报 `Cannot find module 'next'` 的直接原因。）
 - 若发布报 `Release is in rolling status`，先 `vefaas fn release-record status --id <函数ID>`
   等它结束，必要时 `vefaas api AbortRelease --FunctionId <函数ID>` 后再重试。
