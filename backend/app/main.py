@@ -122,6 +122,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         backup_service=backup_service,
         progress_persist_interval_seconds=app_settings.progress_persist_interval_seconds,
         resume_overlap_seconds=app_settings.resume_overlap_seconds,
+        # 阶段 3.5：长内容分窗转写（内存与总时长解耦，中断最多丢一个窗口）
+        transcribe_window_seconds=app_settings.transcribe_window_seconds,
+        transcribe_window_overlap_seconds=app_settings.transcribe_window_overlap_seconds,
     )
 
     @asynccontextmanager

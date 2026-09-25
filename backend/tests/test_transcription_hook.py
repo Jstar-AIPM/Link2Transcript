@@ -134,6 +134,25 @@ def test_missing_vad_info_does_not_block_normal_content():
     assert _service_with_info(info).transcribe(Path("unused.wav")).text == "误识别文本"
 
 
+def test_transcription_exposes_duration_after_vad():
+    """分窗转写需要逐窗累加 VAD 结果，因此服务层要把 duration_after_vad 暴露出来。"""
+    info = _NS(duration=300.0, duration_after_vad=240.0, language="zh")
+    result = _service_with_info(info).transcribe(Path("unused.wav"))
+    assert result.duration_after_vad == 240.0
+
+
+def test_ensure_speech_present_is_reusable_globally():
+    """抽成静态方法供分窗转写做全局判定：单窗全静音不应报错。"""
+    from backend.app.services.transcription_service import TranscriptionService as _TS
+
+    _TS.ensure_speech_present(300.0, 240.0)   # 正常语音：不报错
+    _TS.ensure_speech_present(300.0, 20.0)    # 人声稀疏：不误伤
+    _TS.ensure_speech_present(None, None)     # 信息缺失：不报错
+    with _pytest.raises(_AppError) as exc_info:
+        _TS.ensure_speech_present(300.0, 0.5)
+    assert exc_info.value.code == "SILENT_AUDIO"
+
+
 def test_empty_text_raises_empty_transcript():
     class _Model:
         def transcribe(self, path, **kwargs):

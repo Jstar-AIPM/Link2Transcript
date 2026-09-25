@@ -83,6 +83,11 @@ class Settings:
     progress_persist_interval_seconds: float = 1.0
     resume_on_startup: bool = True
     resume_overlap_seconds: float = 2.0
+    # 阶段 3.5：长内容分窗转写。内容时长超过该窗口秒数时，改为按窗口切片逐段转写
+    # （内存占用与总时长解耦，中断最多丢一个窗口）。0 = 关闭，退化为整段一次转写。
+    transcribe_window_seconds: int = 1200
+    # 窗口之间的重叠秒数，避免切在词中间导致边界丢字（按时间戳去重）
+    transcribe_window_overlap_seconds: float = 5.0
     max_segments_per_task: int = 200_000
 
     @property
@@ -205,5 +210,11 @@ def get_settings() -> Settings:
         ),
         resume_on_startup=_bool("RESUME_ON_STARTUP", True),
         resume_overlap_seconds=float(os.getenv("RESUME_OVERLAP_SECONDS", "2")),
+        transcribe_window_seconds=max(
+            0, int(os.getenv("TRANSCRIBE_WINDOW_SECONDS", "1200"))
+        ),
+        transcribe_window_overlap_seconds=max(
+            0.0, float(os.getenv("TRANSCRIBE_WINDOW_OVERLAP_SECONDS", "5"))
+        ),
         max_segments_per_task=int(os.getenv("MAX_SEGMENTS_PER_TASK", "200000")),
     )
