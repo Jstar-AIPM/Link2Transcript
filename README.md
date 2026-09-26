@@ -7,7 +7,7 @@
 再到 1 小时长内容的实测数据，都在下面写清楚了。
 
 ```
-后端  Python 3.12 · FastAPI · faster-whisper · FFmpeg · yt-dlp · zhconv · Pydantic v2   254 项测试
+后端  Python 3.12 · FastAPI · faster-whisper · FFmpeg · yt-dlp · zhconv · Pydantic v2   252 项测试
 前端  Next.js 16 · React 19 · TypeScript strict · Tailwind CSS v4 · zod                52 项测试
 ```
 
@@ -231,7 +231,7 @@ npm run build && npm start                              # 打开 http://127.0.0.
 ### 测试
 
 ```bash
-.venv/bin/pytest                    # 后端 254 项（全部离线）
+.venv/bin/pytest                    # 后端 252 项（全部离线）
 cd frontend && npm run verify       # 类型 + lint + 52 项测试 + 构建
 ```
 
@@ -245,6 +245,7 @@ cd frontend && npm run verify       # 类型 + lint + 52 项测试 + 构建
 线上是同一套代码的**两个函数**（Next 前端 + FastAPI 后端）加对象存储（TOS）：
 
 - **邀请制**：管理员码永久不限次；普通码 30 天 / 20 次（一码可共用），任务按邀请码隔离；
+  另有**每码每日任务额度**（`MAX_TASKS_PER_CODE_PER_DAY`，默认 30，管理员不受限），用于防滥用；
 - **数据不丢**：任务记录与逐字稿产物写穿对象存储，实例被替换后自动恢复；
 - **打包纪律**：密钥只走环境变量；内部文档、运行数据、`.env` 一律排除在部署包与仓库之外；
 - 后端依赖从根目录 `requirements.txt` 安装；前端用 `next build` 的 standalone 产物部署，
@@ -279,7 +280,7 @@ backend/
     core/         配置、错误、文案、文件名安全处理
     schemas/      任务与产物模型（含 schema 版本）
     services/     编排、平台解析、下载、音频、字幕、转写、片段存储、导出
-  tests/          254 项离线测试
+  tests/          252 项离线测试
 frontend/
   src/
     app/          路由（首页 / 任务页 / 上传流式转发）
@@ -302,7 +303,8 @@ skill/SKILL.md    任务处理路由与降级策略说明
 - **硬字幕（画面烧录）不支持** —— 需要 OCR，属独立能力；
 - **大会员专享视频不支持** —— 只能拿到预览片段，会被明确拒绝而不是输出错误结果；
 - **说话人识别 / 翻译 / LLM 清洗不在范围内**；
-- **单进程单 worker**：多人同时提交会排队，尚未做并发队列与限流（公开使用前建议补上）；
+- **单进程单 worker**：多人同时提交会排队（界面会显示“前面还有 N 个任务”），但尚未做多实例调度；
+- **防滥用**：已有每码每日任务额度；更完整的限流（按 IP / 全局额度）待后续。
 - **转写质量**：已做「繁体 → 简体 + 常见同音错字」规范化，更细的语义纠错不做；
 - **中间文件线上保留 7 天**（`RETENTION_DAYS`），到期自动清理。
 
