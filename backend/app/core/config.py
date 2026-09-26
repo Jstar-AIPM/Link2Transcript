@@ -77,6 +77,9 @@ class Settings:
     warmup_model: bool = False
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
+    #: 小红书登录 Cookie（可选）：机房 IP 会被小红书判定为登录墙（实测返回的页面没有视频流），
+    #: 配置后可正常解析；也可用 PLATFORM_PROXY 改变出口。格式形如 "web_session=xxx; a1=yyy"。
+    xiaohongshu_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
     platform_rate_limit_kbps: int | None = None
     platform_proxy: str = ""
@@ -202,6 +205,7 @@ def get_settings() -> Settings:
         max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "120")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),
+        xiaohongshu_cookie=os.getenv("XIAOHONGSHU_COOKIE", "").strip(),
         platform_download_timeout_seconds=int(
             os.getenv("PLATFORM_DOWNLOAD_TIMEOUT_SECONDS", "1800")
         ),

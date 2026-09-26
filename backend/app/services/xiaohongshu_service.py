@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from backend.app.core.errors import AppError
@@ -29,8 +30,14 @@ USER_AGENT = (
 )
 REFERER = "https://www.xiaohongshu.com/"
 
+COOKIE_FILE_NAME = "xiaohongshu-cookies.txt"
+COOKIE_DOMAIN = ".xiaohongshu.com"
+
 PROBE_FAILED_MESSAGE = "当前链接解析失败。你可以重试，或换一条链接"
 DOWNLOAD_FAILED_MESSAGE = "未能获取该视频，你可以重试，或换一条链接"
+#: 机房 IP 的典型表现：页面没有视频流（登录墙），且服务端没配登录态。
+#: 面向用户时不说内部原因，只给可行动的下一步。
+NO_FORMATS_MESSAGE = "小红书链接暂时无法处理，你可以先试试 B 站链接"
 
 
 class _YdlLogger:
@@ -55,11 +62,17 @@ class XiaohongshuService:
     def __init__(
         self,
         *,
+        cookie: str = "",
+        cookie_file_dir: Path | None = None,
+        proxy: str = "",
         max_media_seconds: float = float("inf"),
         max_media_minutes: int = 0,
         max_download_bytes: int = 1024 * 1024 * 1024,
         socket_timeout_seconds: int = 25,
     ) -> None:
+        self.cookie = (cookie or "").strip()
+        self.cookie_file_dir = cookie_file_dir
+        self.proxy = (proxy or "").strip()
         self.max_media_seconds = max_media_seconds
         self.max_media_minutes = max_media_minutes
         self.max_download_bytes = max_download_bytes
@@ -127,7 +140,7 @@ class XiaohongshuService:
     # ------------------------------------------------------------------ 内部
 
     def _base_options(self) -> dict:
-        return {
+        options = {
             "http_headers": {"User-Agent": USER_AGENT, "Referer": REFERER},
             "quiet": True,
             "no_warnings": False,
@@ -142,6 +155,46 @@ class XiaohongshuService:
             "writesubtitles": True,
             "logger": _YdlLogger(),
         }
+        # 机房 IP 会被小红书判定为登录墙（实测返回的页面没有视频流）→
+        # 与 B 站一样支持登录 Cookie；也可用代理改变出口。二者可选，不配也能跑（住宅 IP）。
+        if self.proxy:
+            options["proxy"] = self.proxy
+        cookie_file = self._ensure_cookie_file()
+        if cookie_file is not None:
+            options["cookiefile"] = str(cookie_file)
+        return options
+
+    def _ensure_cookie_file(self) -> Path | None:
+        """把 ``XIAOHONGSHU_COOKIE`` 写成 yt-dlp 能正确限域的 Netscape cookie 文件。
+
+        文件放在受控目录并设为仅当前用户可读；不打印、不入库。
+        """
+        if not self.cookie:
+            return None
+        if self.cookie_file_dir is None:
+            logger.warning("xhs_cookie_file_dir_missing —— 已配置 Cookie 但没有目录可写")
+            return None
+        directory = Path(self.cookie_file_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(directory, 0o700)
+        except OSError:
+            pass
+        lines = ["# Netscape HTTP Cookie File"]
+        for pair in self.cookie.split(";"):
+            name, sep, value = pair.strip().partition("=")
+            if not sep or not name or not value:
+                continue
+            lines.append("\t".join([COOKIE_DOMAIN, "TRUE", "/", "FALSE", "0", name, value]))
+        if len(lines) == 1:
+            return None
+        path = directory / COOKIE_FILE_NAME
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return path
 
     def _extract(self, url: str, *, download: bool, options: dict | None = None) -> tuple[dict, _YdlLogger]:
         import yt_dlp
@@ -193,11 +246,14 @@ class XiaohongshuService:
             if item.is_file():
                 item.unlink(missing_ok=True)
 
-    @staticmethod
-    def _map_error(exc: Exception) -> AppError:
+    def _map_error(self, exc: Exception) -> AppError:
         text = str(exc)
         lowered = text.lower()
         if "no video formats" in lowered:
+            # 实测：云函数出口访问小红书会拿到登录墙页面（没有视频流）。
+            # 未配置登录 Cookie 时给一个不让人困惑的提示。
+            if not self.cookie:
+                return AppError("VIDEO_INFO_FAILED", NO_FORMATS_MESSAGE)
             return AppError("VIDEO_INFO_FAILED", PROBE_FAILED_MESSAGE)
         if any(token in lowered for token in ("not found", "404", "unavailable", "removed")):
             return AppError("VIDEO_UNAVAILABLE", "无法获取该视频信息，可能是内容已删除或受限")
