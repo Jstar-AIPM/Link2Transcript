@@ -11,13 +11,14 @@ def test_missing_upload_uses_unified_validation_error(settings):
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
-def test_acceptance_page_and_public_config_are_available(settings):
+def test_backend_is_api_only_and_public_config_is_available(settings):
+    """后端不再托管页面（界面是独立的前端服务），只提供 API 与公开配置。"""
     app = create_app(settings)
     with TestClient(app) as client:
-        page = client.get("/")
+        root = client.get("/")
         config = client.get("/api/v1/config")
-    assert page.status_code == 200
-    assert "逐字稿提取器" in page.text
+    assert root.status_code == 404
+    assert config.status_code == 200
     body = config.json()
     assert body["max_upload_mb"] == 1
     assert body["task_poll_interval_seconds"] == 1

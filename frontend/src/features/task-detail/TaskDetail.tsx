@@ -178,6 +178,12 @@ export function TaskDetail({ taskId }: { taskId: string }) {
         <p className="mt-4 border-l-2 border-line-strong pl-3 text-[13.5px] text-muted">{notice}</p>
       ) : null}
 
+      {status?.status === "pending" && (status.queue_ahead ?? 0) > 0 ? (
+        <p className="mt-4 border-l-2 border-line-strong pl-3 text-[13.5px] text-muted">
+          前面还有 {status.queue_ahead} 个任务在排队，请稍候…
+        </p>
+      ) : null}
+
       {error ? (
         <div className="mt-4 border-l-2 border-danger pl-3">
           <p className="text-[14px] text-danger">{error}</p>

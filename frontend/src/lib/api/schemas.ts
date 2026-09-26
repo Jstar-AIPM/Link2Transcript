@@ -53,6 +53,8 @@ export const taskStatusResponseSchema = z.object({
   processing_method_label: z.string(),
   created_at: z.string(),
   updated_at: z.string(),
+  // 排队位置：还没开始时，前面还有多少个任务（后端新增，旧数据没有此字段）
+  queue_ahead: z.number().nullish(),
   elapsed_seconds: z.number(),
   media_duration_seconds: z.number().nullish(),
   estimated_remaining_seconds: z.number().nullish(),

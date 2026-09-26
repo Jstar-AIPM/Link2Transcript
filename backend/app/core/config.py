@@ -71,6 +71,9 @@ class Settings:
     #: 普通邀请码规则：有效期（天）与可用次数
     invite_valid_days: int = 30
     invite_max_uses: int = 20
+    #: 每个邀请码每天可提交的任务数上限（防滥用：保护平台 Cookie 不被刷到风控、保护算力）。
+    #: 0 = 不限制；管理员码不受此限。与邀请码的「30 天 / 20 次登录」是两件事。
+    max_tasks_per_code_per_day: int = 30
     #: 链接链路后端：api（B 站 API，线上默认，机房 IP 不被 HTML 风控影响）/ ytdlp（后备）
     platform_backend: str = "api"
     #: 启动时后台预热语音识别模型（线上建议开启：权重数百 MB，预热后首个任务不用等）
@@ -200,6 +203,9 @@ def get_settings() -> Settings:
         ),
         invite_valid_days=max(1, int(os.getenv("INVITE_VALID_DAYS", "30"))),
         invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
+        max_tasks_per_code_per_day=max(
+            0, int(os.getenv("MAX_TASKS_PER_CODE_PER_DAY", "30"))
+        ),
         platform_backend=os.getenv("PLATFORM_BACKEND", "api").strip().lower(),
         warmup_model=_bool("WARMUP_MODEL", False),
         max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "120")),

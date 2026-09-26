@@ -352,6 +352,42 @@ class TaskService:
             interrupted += 1
         return interrupted, resumable
 
+    # ------------------------------------------------------ 限流与排队（阶段 6.5）
+
+    def count_created_today(self, owner_id: str) -> int:
+        """统计某个归属今天创建的任务数（用于「每码每日额度」）。
+
+        直接从任务记录统计，不额外维护计数器：任务本身就是权威数据，
+        且线上保留期（7 天）会自然限制扫描量。
+        """
+        today = datetime.now().astimezone().date()
+        count = 0
+        for path in self.tasks_dir.glob("*.json"):
+            try:
+                record = self.get(path.stem)
+            except AppError:
+                continue
+            if record.owner_id != owner_id:
+                continue
+            if record.created_at.astimezone().date() == today:
+                count += 1
+        return count
+
+    def pending_ahead(self, task_id: str) -> int:
+        """还没开始时，前面还有多少个更早创建的任务（给前端排队文案）。"""
+        record = self.get(task_id)
+        if record.status != TaskStatus.PENDING:
+            return 0
+        ahead = 0
+        for path in self.tasks_dir.glob("*.json"):
+            try:
+                other = self.get(path.stem)
+            except AppError:
+                continue
+            if other.status == TaskStatus.PENDING and other.created_at < record.created_at:
+                ahead += 1
+        return ahead
+
     # ------------------------------------------------------------------ 内部
 
     def _update(self, task_id: str, **changes) -> TaskRecord:

@@ -379,3 +379,61 @@ def test_schema_v3_records_still_readable(settings):
 
     record = TaskService(tasks).get(task_id)
     assert record.owner_id is None
+
+
+# ---------------------------------------------------------------------------
+# 阶段 6.5：每码每日额度与排队位置
+# ---------------------------------------------------------------------------
+
+
+def test_daily_task_quota_applies_to_normal_code_but_not_admin(settings, user_copy_checker):
+    """每个邀请码每天的**任务数**上限——与邀请码自带的「30 天 / 20 次登录」是两件事。"""
+    url = "https://www.bilibili.com/video/BV1VVhk6pEiR"
+    app = create_app(authed_settings(settings, max_tasks_per_code_per_day=2))
+    app.state.processor.submit = lambda task_id: None
+    with TestClient(app) as client:
+        admin = login(client, "ADMIN-CODE")
+        code = client.post(
+            "/api/v1/admin/invite-codes", json={"count": 1}, headers=headers(admin["token"])
+        ).json()["codes"][0]["code"]
+        normal = login(client, code)
+
+        for _ in range(2):
+            allowed = client.post(
+                "/api/v1/tasks/from-url", json={"url": url}, headers=headers(normal["token"])
+            )
+            assert allowed.status_code == 202
+
+        blocked = client.post(
+            "/api/v1/tasks/from-url", json={"url": url}, headers=headers(normal["token"])
+        )
+        assert blocked.status_code == 429
+        assert blocked.json()["error"]["code"] == "DAILY_LIMIT_REACHED"
+        user_copy_checker(blocked.json()["error"]["message"])
+
+        # 管理员码不受每日额度限制（产品规则：管理员不限次数）
+        for _ in range(3):
+            assert (
+                client.post(
+                    "/api/v1/tasks/from-url", json={"url": url}, headers=headers(admin["token"])
+                ).status_code
+                == 202
+            )
+
+
+def test_pending_task_reports_queue_position(authed_client):
+    url = "https://www.bilibili.com/video/BV1VVhk6pEiR"
+    admin = login(authed_client, "ADMIN-CODE")
+
+    first = authed_client.post(
+        "/api/v1/tasks/from-url", json={"url": url}, headers=headers(admin["token"])
+    ).json()["task_id"]
+    second = authed_client.post(
+        "/api/v1/tasks/from-url", json={"url": url}, headers=headers(admin["token"])
+    ).json()["task_id"]
+
+    body = authed_client.get(f"/api/v1/tasks/{second}", headers=headers(admin["token"])).json()
+    assert body["status"] == "pending"
+    assert body["queue_ahead"] == 1
+    first_body = authed_client.get(f"/api/v1/tasks/{first}", headers=headers(admin["token"])).json()
+    assert first_body["queue_ahead"] == 0

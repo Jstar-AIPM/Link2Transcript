@@ -179,6 +179,8 @@ class TaskStatusResponse(BaseModel):
     partial_result_available: bool = False
     #: 用户是否还能取消（终态任务不可取消）
     cancellable: bool = False
+    #: 排队位置：还没开始时，前面还有多少个任务（0 = 排在最前或已在处理）
+    queue_ahead: int = 0
     error: TaskError | None
     artifacts: dict[str, str | None]
 
