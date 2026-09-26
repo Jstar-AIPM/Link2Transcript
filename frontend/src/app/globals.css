@@ -25,9 +25,9 @@
     word-break: break-word;
   }
 
-  /* 核心操作键盘可达、焦点清晰（用墨色环，强调色只做数据与激活态） */
+  /* 核心操作键盘可达、焦点清晰（焦点环与强调色同族） */
   :where(a, button, summary, input, select, textarea, label):focus-visible {
-    outline: 2px solid var(--color-ink);
+    outline: 2px solid var(--color-accent);
     outline-offset: 2px;
     border-radius: var(--radius-control);
   }

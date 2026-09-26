@@ -24,6 +24,7 @@ import { useServiceConfig } from "@/features/service-config/useServiceConfig";
 import { ApiError, api } from "@/lib/api/client";
 import { uploadFile, type UploadHandle } from "@/lib/api/upload";
 import { extractUrlFromText, isSupportedLink } from "@/lib/constants";
+import { formatLimitMinutes } from "@/lib/format";
 
 type Mode = "file" | "url";
 
@@ -179,7 +180,7 @@ export function CreateTaskPanel() {
           />
         ) : (
           <p className="rounded-control bg-sunken px-3 py-2 text-[13px] leading-relaxed text-body">
-            当前环境只支持粘贴视频链接（线上暂不支持上传本地文件）。
+            当前仅支持粘贴视频链接，上传本地文件暂未开放。
           </p>
         )}
 
@@ -225,10 +226,10 @@ export function CreateTaskPanel() {
                 </p>
               ) : null}
               <p className="mt-2 text-[13px] leading-relaxed text-muted">
-                支持单个视频链接；也可以直接整段粘贴 App 里的分享文案（会自动识别其中的链接）。
-                多 P 视频请粘贴某一个分集的链接。
+                粘贴链接即可，也可以整段粘贴 App 里的分享文案（会自动识别其中的链接）。
+                分集视频请粘贴你要提取的那一集。
                 {maxMediaMinutes && maxMediaMinutes > 0
-                  ? ` 单条内容时长上限 ${maxMediaMinutes} 分钟。`
+                  ? ` 单条内容时长上限 ${formatLimitMinutes(maxMediaMinutes)}。`
                   : " 不限制内容时长。"}
               </p>
             </div>

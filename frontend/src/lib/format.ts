@@ -25,6 +25,12 @@ export function formatTimestamp(seconds: number): string {
   return `${pad(hours)}:${pad(minutes)}:${pad(secs)}`;
 }
 
+/** 时长上限（分钟）→ 「2 小时」/「90 分钟」（与后端 format_limit 一致） */
+export function formatLimitMinutes(minutes: number): string {
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60} 小时`;
+  return `${minutes} 分钟`;
+}
+
 /** 进度百分比：后端已经算好，这里只做展示与夹紧，避免出现 -1% 或 101% */
 export function formatPercent(value: number | null | undefined): string {
   const clamped = Math.min(100, Math.max(0, value ?? 0));

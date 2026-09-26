@@ -9,8 +9,8 @@ const BASE =
   "whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-45";
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  // 主按钮固定墨色：强调色只做数据与激活态
-  primary: "bg-ink text-canvas px-4 hover:bg-[#2b2725]",
+  // 主按钮：苹果官网蓝实心（与链接/进度/激活态同一族）
+  primary: "bg-accent-button text-white px-4 hover:bg-accent-button-hover",
   ghost: "border border-line-strong bg-transparent px-4 text-ink hover:bg-sunken",
   quiet: "px-2 text-muted hover:text-ink",
 };

@@ -52,7 +52,7 @@ function emptyHint(status: TaskStatusResponse | null): string {
     case "exporting":
       return "正在生成文件…";
     case "transcribing":
-      return "正在等待第一段内容…（首次转写需要先加载语音识别模型，约 1–2 分钟；之后会快很多）";
+      return "正在等待第一段内容…（首次处理需要约 1–2 分钟，之后会快很多）";
     default:
       return "正在检查视频字幕…（有字幕会直接提取，通常几秒完成）";
   }
@@ -216,6 +216,7 @@ export function TaskDetail({ taskId }: { taskId: string }) {
 
       <TranscriptViewer
         segments={segments}
+        total={status?.segment_count ?? segments.length}
         emptyHint={emptyHint(status)}
         headerActions={
           hasContent ? (

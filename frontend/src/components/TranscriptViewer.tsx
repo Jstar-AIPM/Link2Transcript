@@ -21,10 +21,13 @@ const FOLLOW_THRESHOLD_PX = 24;
 
 export function TranscriptViewer({
   segments,
+  total,
   emptyHint,
   headerActions,
 }: {
   segments: Segment[];
+  /** 真实总段数（后端给出），而不是已加载的条数——长逐字稿是分页拉的 */
+  total: number;
   emptyHint: string;
   /** 右侧操作区（如「复制全文」），由调用方决定什么时候显示 */
   headerActions?: React.ReactNode;
@@ -59,7 +62,7 @@ export function TranscriptViewer({
     <section className="mt-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="font-mono text-[11px] uppercase tracking-[0.08em] text-muted">
-          逐字稿{segments.length > 0 ? ` · ${segments.length} 段` : ""}
+          逐字稿{total > 0 ? ` · ${total} 段` : ""}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {headerActions}

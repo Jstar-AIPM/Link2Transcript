@@ -132,11 +132,11 @@ describe("链接模式（B 站 / 小红书）", () => {
     return (await screen.findByLabelText("视频链接")) as HTMLInputElement;
   }
 
-  it("默认给出多 P 与时长上限提示", async () => {
+  it("默认给出分集与时长上限提示", async () => {
     await renderPanel();
     await switchToUrl();
-    expect(document.body.textContent).toContain("多 P 视频请粘贴某一个分集的链接");
-    expect(document.body.textContent).toContain("单条内容时长上限 360 分钟");
+    expect(document.body.textContent).toContain("分集视频请粘贴你要提取的那一集");
+    expect(document.body.textContent).toContain("单条内容时长上限 6 小时");
   });
 
   it("输入里没有链接时，提示整段粘贴（与后端一致）", async () => {
@@ -239,7 +239,7 @@ describe("线上关闭本地上传时（只支持链接）", () => {
 
     render(<CreateTaskPanel />);
 
-    await screen.findByText(/当前环境只支持粘贴视频链接/);
+    await screen.findByText(/当前仅支持粘贴视频链接/);
     // 上传入口消失：没有模式切换、也没有文件选择框
     expect(screen.queryByRole("tab", { name: "上传本地文件" })).toBeNull();
     expect(document.querySelector("#file-input")).toBeNull();
