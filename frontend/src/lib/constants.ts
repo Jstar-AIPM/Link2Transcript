@@ -33,10 +33,13 @@ export function extractUrlFromText(value: string): string | null {
 }
 
 /**
- * 当前支持平台的弱校验（只判断“像不像”，真白名单在后端）：B 站子域与 b23.tv 短链。
+ * 当前支持平台的弱校验（只判断“像不像”，真白名单在后端）：
+ * B 站子域 / b23.tv 短链；小红书 xiaohongshu.com / xhslink 短链。
  */
 export function isSupportedLink(url: string): boolean {
-  return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv)\//i.test(url.trim());
+  return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv|xiaohongshu\.com|xhslink\.com|xhslink\.cn)\//i.test(
+    url.trim(),
+  );
 }
 
 /** 大文件提示用：把字节说成人话（与后端一致用 MB / GB） */

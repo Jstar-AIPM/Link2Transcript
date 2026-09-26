@@ -125,7 +125,7 @@ export function CreateTaskPanel() {
     if (!isSupportedLink(extracted)) {
       setSubmit({
         kind: "error",
-        message: "当前仅支持 B 站链接，请粘贴 B 站视频链接",
+        message: "当前仅支持 B 站与小红书链接，请检查后重试",
         code: "UNSUPPORTED_PLATFORM",
       });
       return;
@@ -174,12 +174,12 @@ export function CreateTaskPanel() {
             disabled={busy}
             options={[
               { value: "file", label: "上传本地文件" },
-              { value: "url", label: "粘贴 B 站链接" },
+              { value: "url", label: "粘贴视频链接" },
             ]}
           />
         ) : (
           <p className="rounded-control bg-sunken px-3 py-2 text-[13px] leading-relaxed text-body">
-            当前环境只支持粘贴 B 站视频链接（线上暂不支持上传本地文件）。
+            当前环境只支持粘贴视频链接（线上暂不支持上传本地文件）。
           </p>
         )}
 
@@ -202,14 +202,14 @@ export function CreateTaskPanel() {
           ) : (
             <div>
               <label htmlFor="url-input" className="text-[13px] text-muted">
-                B 站视频链接
+                视频链接
               </label>
               <input
                 id="url-input"
                 type="text"
                 inputMode="url"
                 autoComplete="off"
-                placeholder="粘贴 B 站链接，或整段分享文案"
+                placeholder="粘贴 B 站 / 小红书链接，或整段分享文案"
                 value={url}
                 disabled={busy}
                 onChange={(event) => {

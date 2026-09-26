@@ -332,3 +332,22 @@ def test_platform_without_media_service_fails_clearly(settings, user_copy_checke
     assert record.error.code == "UNSUPPORTED_PLATFORM"
     assert record.error.failed_stage == TaskStatus.CHECKING_SUBTITLE
     user_copy_checker(record.error.message)
+
+
+def test_xiaohongshu_task_runs_through_its_own_service(settings):
+    """小红书：没有字幕轨 → 直接下载媒体并语音转写。"""
+    stub = PlatformDownloadStub(
+        info=make_probe_info(duration=150.0, extractor="XiaoHongShu", title="小红书笔记")
+    )
+    record = run(
+        settings,
+        download_stub=PlatformDownloadStub(),
+        media_service=FakeMediaService(duration_seconds=150.0),
+        platform=Platform.XIAOHONGSHU,
+        platform_media_services={Platform.XIAOHONGSHU: stub},
+    )
+    assert record.status == TaskStatus.SUCCEEDED
+    assert record.platform == Platform.XIAOHONGSHU
+    assert record.extract_method == ExtractMethod.SPEECH_TO_TEXT
+    assert record.processing_method == ProcessingMethod.SPEECH_TO_TEXT_REMOTE
+    assert stub.downloaded == [VIDEO_URL]

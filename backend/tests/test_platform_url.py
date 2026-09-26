@@ -52,7 +52,6 @@ def test_short_link_pointing_elsewhere_is_rejected(user_copy_checker):
     "url",
     [
         "https://www.douyin.com/video/123456",
-        "https://www.xiaohongshu.com/explore/123456",
         "https://www.youtube.com/watch?v=abcdefg",
         "https://www.bilibili.com.evil.com/video/BV1BqhB6nEdN",
     ],
@@ -90,17 +89,70 @@ def test_invalid_urls_are_rejected(url, user_copy_checker):
 # ---------------------------------------------------------------------------
 
 
-def test_default_registry_only_enables_bilibili(user_copy_checker):
-    """抖音 / 小红书未完成真实网络验证前不得被放行（否则会创建必然失败的任务）。"""
+def test_default_registry_enables_bilibili_and_xiaohongshu(user_copy_checker):
+    """默认启用 B 站与小红书；抖音尚未启用（给专门的中文提示）。"""
     service = PlatformService()
-    assert service.supported_names() == ["B站"]
-    assert "B站" in service.unsupported_message()
+    assert service.supported_names() == ["B站", "小红书"]
+    assert "小红书" in service.unsupported_message()
     user_copy_checker(service.unsupported_message())
 
-    for url in ("https://www.douyin.com/video/123456", "https://www.xiaohongshu.com/explore/123"):
-        with pytest.raises(AppError) as exc_info:
-            service.resolve(url)
-        assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+    with pytest.raises(AppError) as exc_info:
+        service.resolve("https://www.douyin.com/video/123456")
+    assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+    assert "抖音" in exc_info.value.message
+    user_copy_checker(exc_info.value.message)
+
+    with pytest.raises(AppError) as exc_info:
+        service.resolve("https://www.youtube.com/watch?v=abcdefg")
+    assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+
+
+XHS_NOTE_ID = "6ab48461000000000b00692e"
+
+
+def test_xiaohongshu_urls_are_accepted():
+    service = PlatformService()
+    for url in (
+        f"https://www.xiaohongshu.com/explore/{XHS_NOTE_ID}",
+        f"https://www.xiaohongshu.com/discovery/item/{XHS_NOTE_ID}?xsec_token=ABC%3D",
+    ):
+        resolved = service.resolve(url)
+        assert resolved.platform == Platform.XIAOHONGSHU
+        assert resolved.video_id == XHS_NOTE_ID
+    # xsec_token 在查询串里，必须原样保留（丢掉会导致后续解析失败）
+    with_token = service.resolve(
+        f"https://www.xiaohongshu.com/discovery/item/{XHS_NOTE_ID}?xsec_token=ABC%3D"
+    )
+    assert "xsec_token=ABC%3D" in with_token.url
+
+
+def test_xiaohongshu_short_link_resolves_to_real_note():
+    item = f"https://www.xiaohongshu.com/discovery/item/{XHS_NOTE_ID}?xsec_token=ABC%3D"
+    service = PlatformService(short_link_resolver=lambda url: item)
+    resolved = service.resolve("https://xhslink.cn/o/437QhrQY86l")
+    assert resolved.platform == Platform.XIAOHONGSHU
+    assert resolved.video_id == XHS_NOTE_ID
+    assert resolved.url == item
+
+
+def test_xhs_short_link_pointing_elsewhere_is_rejected():
+    service = PlatformService(
+        short_link_resolver=lambda url: "https://www.bilibili.com/video/BV1BqhB6nEdN"
+    )
+    with pytest.raises(AppError) as exc_info:
+        service.resolve("https://xhslink.cn/o/abc")
+    assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+
+
+def test_xiaohongshu_pasted_share_text_is_extracted():
+    text = (
+        "在任何情况之下，向外证明自己过得比别人好，都是一件... "
+        f"https://xhslink.cn/o/437QhrQY86l 复制一下，打开【小红书】就能阅读全文。"
+    )
+    service = PlatformService(short_link_resolver=lambda url: f"https://www.xiaohongshu.com/discovery/item/{XHS_NOTE_ID}")
+    resolved = service.resolve(text)
+    assert resolved.platform == Platform.XIAOHONGSHU
+    assert resolved.video_id == XHS_NOTE_ID
 
 
 def test_registry_lets_a_new_platform_plug_in():

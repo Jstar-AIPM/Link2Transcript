@@ -16,6 +16,7 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
 from backend.app.core.logging import configure_logging
 from backend.app.core.trace import get_trace_id, new_trace_id, set_trace_id
+from backend.app.schemas.task import Platform
 from backend.app.services.cleanup_service import CleanupService
 from backend.app.services.backup_service import BackupScheduler, BackupService
 from backend.app.services.bilibili_api_service import BilibiliApiService
@@ -32,6 +33,7 @@ from backend.app.services.storage_service import build_storage
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
+from backend.app.services.xiaohongshu_service import XiaohongshuService
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_media_seconds=app_settings.max_media_seconds,
             max_media_minutes=app_settings.max_media_minutes,
         )
+    # 阶段 5：小红书链路（短链已在 PlatformService 解析成含 xsec_token 的真实地址）
+    xiaohongshu_service = XiaohongshuService(
+        max_media_seconds=app_settings.max_media_seconds,
+        max_media_minutes=app_settings.max_media_minutes,
+        max_download_bytes=app_settings.max_download_bytes,
+    )
     # 阶段 6：B 站登录态自检（字幕路径依赖它；失效时后台告警，不阻塞启动）
     credential_service = BilibiliCredentialService(app_settings.bilibili_cookie)
     invite_service = InviteService(
@@ -112,6 +120,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         subtitle_service=subtitle_service,
         # 链接链路的实际实现（B 站 API 或 yt-dlp）
         platform_media_service=platform_media_service,
+        # 按平台选择链路实现：当前 B 站 + 小红书
+        platform_media_services={Platform.XIAOHONGSHU: xiaohongshu_service},
         uploads_dir=app_settings.uploads_dir,
         audio_dir=app_settings.audio_dir,
         downloads_dir=app_settings.downloads_dir,
@@ -179,6 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.processor = processor
     app.state.invite_service = invite_service
     app.state.platform_media_service = platform_media_service
+    app.state.xiaohongshu_service = xiaohongshu_service
     app.state.credential_service = credential_service
     app.state.storage = storage
     app.state.backup_service = backup_service
