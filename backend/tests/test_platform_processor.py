@@ -76,7 +76,7 @@ class PlatformDownloadStub:
         return DownloadedAudio(path=path, size_bytes=path.stat().st_size)
 
 
-def create_platform_task(settings):
+def create_platform_task(settings, platform: Platform = Platform.BILIBILI):
     settings.ensure_directories()
     tasks = TaskService(settings.tasks_dir)
     task_id = tasks.new_task_id()
@@ -88,21 +88,30 @@ def create_platform_task(settings):
         content_type=None,
         size_bytes=0,
         source_type=SourceType.PLATFORM_URL,
-        platform=Platform.BILIBILI,
+        platform=platform,
         source_url=VIDEO_URL,
         resolved_url=VIDEO_URL,
     )
     return tasks, task_id
 
 
-def run(settings, download_stub, transcription_service=None, export_service=None, media_service=None):
-    tasks, task_id = create_platform_task(settings)
+def run(
+    settings,
+    download_stub,
+    transcription_service=None,
+    export_service=None,
+    media_service=None,
+    platform=Platform.BILIBILI,
+    platform_media_services=None,
+):
+    tasks, task_id = create_platform_task(settings, platform=platform)
     processor = build_processor(
         settings,
         media_service=media_service or FakeMediaService(duration_seconds=174.0),
         download_service=download_stub,
         transcription_service=transcription_service,
         export_service=export_service,
+        platform_media_services=platform_media_services,
     )
     processor.process(task_id)
     processor.shutdown()
@@ -290,3 +299,36 @@ def test_long_video_is_not_blocked_by_duration(settings):
     record = run(unlimited, stub, media_service=FakeMediaService(duration_seconds=5 * 3600))
     assert record.status == TaskStatus.SUCCEEDED
     assert stub.downloaded == [VIDEO_URL]
+
+
+# ---------------------------------------------------------------------------
+# 阶段 5 适配层：链路按平台选择
+# ---------------------------------------------------------------------------
+
+
+def test_media_service_is_selected_by_platform(settings):
+    """处理器按任务的 platform 选择对应链路实现（抖音走它自己的适配器）。"""
+    stub = PlatformDownloadStub(info=make_probe_info())
+    record = run(
+        settings,
+        download_stub=PlatformDownloadStub(probe_error=AppError("X", "不会被调用")),
+        media_service=FakeMediaService(duration_seconds=174.0),
+        platform=Platform.DOUYIN,
+        platform_media_services={Platform.DOUYIN: stub},
+    )
+    assert record.status == TaskStatus.SUCCEEDED
+    assert stub.downloaded == [VIDEO_URL]
+
+
+def test_platform_without_media_service_fails_clearly(settings, user_copy_checker):
+    """没有为该平台注册链路时，给明确中文提示，而不是崩在内部。"""
+    record = run(
+        settings,
+        download_stub=PlatformDownloadStub(),
+        platform=Platform.XIAOHONGSHU,
+    )
+    assert record.status == TaskStatus.FAILED
+    assert record.error is not None
+    assert record.error.code == "UNSUPPORTED_PLATFORM"
+    assert record.error.failed_stage == TaskStatus.CHECKING_SUBTITLE
+    user_copy_checker(record.error.message)

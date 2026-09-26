@@ -45,6 +45,9 @@ class SourceType(StrEnum):
 class Platform(StrEnum):
     LOCAL = "local"
     BILIBILI = "bilibili"
+    # 阶段 5 预留：适配器与链路就绪后再启用（当前解析层会拒绝）
+    DOUYIN = "douyin"
+    XIAOHONGSHU = "xiaohongshu"
 
 
 class ExtractMethod(StrEnum):

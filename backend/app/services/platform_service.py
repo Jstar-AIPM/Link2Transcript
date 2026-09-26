@@ -1,8 +1,22 @@
+"""平台识别、URL 白名单校验与短链解析。
+
+安全底线：**不接受任意 URL 直接进入下载器**。域名白名单在服务端强制执行，
+短链跳转后会再做一次白名单校验，避免通过跳转绕过。
+
+阶段 5 起改为**适配器注册表**：每个平台实现一个 ``PlatformAdapter``（域名集合、
+短链域名、URL 解析规则），``PlatformService`` 只负责「校验语法 → 找到适配器 →
+（必要时）解析短链 → 交给适配器解析」。新增平台只需注册一个适配器，
+不需要改动主链路与调用方。
+
+当前只注册了 B 站（``BilibiliAdapter``）；抖音 / 小红书要等机房出口的
+真实网络可行性验证通过后再接入（见《第五阶段前期平台可行性验证记录》）。
+"""
+
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 from urllib.parse import urlsplit
 
 from backend.app.core.errors import AppError
@@ -11,15 +25,14 @@ from backend.app.schemas.task import Platform
 
 MAX_URL_LENGTH = 2048
 
-# 平台域名白名单。只接受这些域名（或其子域名），其余一律拒绝。
+INVALID_URL_MESSAGE = "链接格式不正确，请粘贴完整的视频链接"
+
+# B 站：普通投稿视频 /video/BVxxxxxxxxxx 或 /video/av123456
 BILIBILI_DOMAINS = {"bilibili.com"}
-SHORT_LINK_DOMAINS = {"b23.tv"}
-
-# 普通投稿视频：/video/BVxxxxxxxxxx 或 /video/av123456
-VIDEO_PATH_PATTERN = re.compile(r"^/video/(?P<video_id>BV[0-9A-Za-z]{10}|av\d+)/?$", re.IGNORECASE)
-
-INVALID_URL_MESSAGE = "链接格式不正确，请粘贴完整的 B 站视频链接"
-UNSUPPORTED_PLATFORM_MESSAGE = "当前仅支持 B 站链接。你也可以把视频保存到本地后直接上传"
+BILIBILI_SHORT_LINK_DOMAINS = {"b23.tv"}
+BILIBILI_VIDEO_PATH_PATTERN = re.compile(
+    r"^/video/(?P<video_id>BV[0-9A-Za-z]{10}|av\d+)/?$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True)
@@ -30,47 +43,126 @@ class ResolvedSource:
     video_id: str
 
 
-def _is_under(host: str, domains: set[str]) -> bool:
+def _is_under(host: str, domains: frozenset[str] | set[str]) -> bool:
     return any(host == domain or host.endswith(f".{domain}") for domain in domains)
 
 
-class PlatformService:
-    """平台识别、URL 白名单校验与短链解析。
+class PlatformAdapter:
+    """一个平台需要提供的全部信息与解析逻辑。
 
-    安全底线：不接受任意 URL 直接进入下载器。域名白名单在服务端强制执行，
-    短链跳转后会再做一次白名单校验，避免通过跳转绕过。
+    子类只需给出 ``platform`` / ``name`` / ``domains`` / ``short_link_domains``，
+    并实现 ``parse``。绝大多数平台是「固定路径 + 正则取 id」，可直接复用
+    ``RegexPathAdapter``。
     """
 
+    #: 注意：这里只声明注解、不给默认值。子类是 dataclass，若基类同名属性带了
+    #: 默认值，会被 dataclass 当成“有默认的字段”，导致字段顺序报错。
+    platform: Platform
+    name: str  #: 用户可见的平台名（出现在「当前仅支持…」这类提示里）
+    domains: frozenset[str]
+    short_link_domains: frozenset[str]
+
+    def matches(self, host: str) -> bool:
+        return _is_under(host, self.domains)
+
+    def is_short_link(self, host: str) -> bool:
+        return _is_under(host, self.short_link_domains)
+
+    def parse(self, url: str) -> tuple[str, str]:
+        """把（已确认属于本平台的）URL 解析成 ``(video_id, 规范化 url)``。
+
+        无法识别时抛 ``INVALID_SOURCE_URL``。
+        """
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class RegexPathAdapter(PlatformAdapter):
+    """最通用的适配器：域名 + 路径正则取视频 id。"""
+
+    platform: Platform
+    name: str
+    domains: frozenset[str]
+    path_pattern: re.Pattern[str]
+    invalid_message: str = INVALID_URL_MESSAGE
+    short_link_domains: frozenset[str] = frozenset()
+
+    def parse(self, url: str) -> tuple[str, str]:
+        match = self.path_pattern.match(urlsplit(url).path)
+        if not match:
+            raise AppError("INVALID_SOURCE_URL", self.invalid_message)
+        return match.group("video_id"), url
+
+
+BilibiliAdapter = RegexPathAdapter(
+    platform=Platform.BILIBILI,
+    name="B站",
+    domains=frozenset(BILIBILI_DOMAINS),
+    short_link_domains=frozenset(BILIBILI_SHORT_LINK_DOMAINS),
+    path_pattern=BILIBILI_VIDEO_PATH_PATTERN,
+)
+
+
+def default_adapters() -> list[PlatformAdapter]:
+    """当前启用的平台适配器。新增平台时在这里追加。"""
+    return [BilibiliAdapter]
+
+
+class PlatformService:
     def __init__(
         self,
         *,
         timeout_seconds: int = 20,
         proxy: str = "",
         short_link_resolver: Callable[[str], str] | None = None,
+        adapters: Sequence[PlatformAdapter] | None = None,
     ) -> None:
         self.timeout_seconds = timeout_seconds
         self.proxy = proxy
+        self.adapters: list[PlatformAdapter] = (
+            list(adapters) if adapters is not None else default_adapters()
+        )
+        # 测试会替换这个属性来绕过真实网络请求（保持既有写法不变）
         self._short_link_resolver = short_link_resolver or self._request_short_link
 
     def resolve(self, raw_url: str) -> ResolvedSource:
         normalized = self._validate_syntax(raw_url)
         host = self._host_of(normalized)
-        if _is_under(host, SHORT_LINK_DOMAINS):
+        adapter = self._adapter_for(host)
+        if adapter is None:
+            raise AppError("UNSUPPORTED_PLATFORM", self.unsupported_message())
+
+        if adapter.is_short_link(host):
             normalized = self._resolve_short_link(normalized)
             host = self._host_of(normalized)
-            if not _is_under(host, BILIBILI_DOMAINS):
-                raise AppError("UNSUPPORTED_PLATFORM", UNSUPPORTED_PLATFORM_MESSAGE)
-        match = VIDEO_PATH_PATTERN.match(urlsplit(normalized).path)
-        if not match:
-            raise AppError("INVALID_SOURCE_URL", INVALID_URL_MESSAGE)
+            target = self._adapter_for(host)
+            # 短链只能跳到「同一个平台」的正式域名，避免通过跳转绕过白名单
+            if target is None or target.platform != adapter.platform:
+                raise AppError("UNSUPPORTED_PLATFORM", self.unsupported_message())
+            adapter = target
+
+        video_id, canonical = adapter.parse(normalized)
         return ResolvedSource(
-            platform=Platform.BILIBILI,
-            url=normalized,
+            platform=adapter.platform,
+            url=canonical,
             original_url=raw_url.strip(),
-            video_id=match.group("video_id"),
+            video_id=video_id,
         )
 
+    def supported_names(self) -> list[str]:
+        return [adapter.name for adapter in self.adapters]
+
+    def unsupported_message(self) -> str:
+        names = "、".join(self.supported_names())
+        return f"当前仅支持{names}链接。你也可以把视频保存到本地后直接上传"
+
     # ------------------------------------------------------------------ 内部
+
+    def _adapter_for(self, host: str) -> PlatformAdapter | None:
+        for adapter in self.adapters:
+            if adapter.matches(host) or adapter.is_short_link(host):
+                return adapter
+        return None
 
     def _validate_syntax(self, raw_url: str) -> str:
         if not isinstance(raw_url, str):
@@ -81,9 +173,6 @@ class PlatformService:
         parts = urlsplit(candidate)
         if parts.scheme.lower() not in {"http", "https"} or not parts.hostname:
             raise AppError("INVALID_SOURCE_URL", INVALID_URL_MESSAGE)
-        host = parts.hostname.lower().rstrip(".")
-        if not (_is_under(host, BILIBILI_DOMAINS) or _is_under(host, SHORT_LINK_DOMAINS)):
-            raise AppError("UNSUPPORTED_PLATFORM", UNSUPPORTED_PLATFORM_MESSAGE)
         return candidate
 
     @staticmethod

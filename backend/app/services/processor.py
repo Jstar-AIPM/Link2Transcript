@@ -21,6 +21,7 @@ from backend.app.core.messages import (
 from backend.app.schemas.task import (
     ExtractMethod,
     MediaType,
+    Platform,
     ProcessingMethod,
     SourceType,
     SubtitleKind,
@@ -167,6 +168,7 @@ class TaskProcessor:
         download_service: DownloadService,
         subtitle_service: SubtitleService,
         platform_media_service=None,
+        platform_media_services: dict | None = None,
         segment_store: SegmentStore,
         backup_service=None,
         uploads_dir: Path,
@@ -186,8 +188,16 @@ class TaskProcessor:
         self.export_service = export_service
         self.download_service = download_service
         self.subtitle_service = subtitle_service
-        # 链接链路的实际实现：B 站 API 或 yt-dlp（两者接口一致，处理器不关心是哪一种）
+        # 链接链路的实际实现：按平台选择。当前只有 B 站（API 或 yt-dlp，两者接口一致）；
+        # 新增平台时用 ``platform_media_services`` 传入 ``{Platform: 服务}`` 映射。
         self.platform_media_service = platform_media_service or download_service
+        self.platform_media_services: dict[Platform, object] = dict(
+            platform_media_services or {}
+        )
+        if self.platform_media_service is not None:
+            self.platform_media_services.setdefault(
+                Platform.BILIBILI, self.platform_media_service
+            )
         self.uploads_dir = uploads_dir
         self.audio_dir = audio_dir
         self.downloads_dir = downloads_dir
@@ -258,6 +268,16 @@ class TaskProcessor:
 
     # ------------------------------------------------------- 路径一：本地文件
 
+    def _media_service_for(self, platform: Platform):
+        """按平台取链接链路的实现（阶段 5 适配层）。"""
+        service = self.platform_media_services.get(platform)
+        if service is None:
+            raise AppError(
+                "UNSUPPORTED_PLATFORM",
+                "当前暂不支持该平台的链接，请改用 B 站链接",
+            )
+        return service
+
     def _process_local(self, task_id: str, record, task_started: float) -> None:
         stage_started = perf_counter()
         record = self.task_service.transition(task_id, TaskStatus.VALIDATING)
@@ -299,7 +319,8 @@ class TaskProcessor:
 
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.CHECKING_SUBTITLE)
-        meta = self.platform_media_service.probe(url)
+        media_service = self._media_service_for(record.platform)
+        meta = media_service.probe(url)
         self.task_service.set_media_duration(task_id, meta.duration_seconds)
         if meta.title:
             self.task_service.set_original_filename(
@@ -316,7 +337,7 @@ class TaskProcessor:
         # 无可用字幕：只下载音频轨，然后复用阶段 1 已验证的转写链路。
         stage_started = perf_counter()
         self.task_service.transition(task_id, TaskStatus.DOWNLOADING_AUDIO)
-        downloaded = self.platform_media_service.download_audio(
+        downloaded = media_service.download_audio(
             url, self.downloads_dir / task_id, task_id
         )
         self.task_service.set_downloaded_bytes(task_id, downloaded.size_bytes)
