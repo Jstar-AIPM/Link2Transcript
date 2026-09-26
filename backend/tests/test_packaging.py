@@ -43,6 +43,11 @@ def test_env_and_data_are_excluded_from_deploy_package():
         "frontend/node_modules/x.js",
         ".vefaas/config.json",
         "__pycache__/module.pyc",
+        # 内部文档目录名带前缀点号，必须与不带点号的写法一起挡住，
+        # 否则「上线凭据.md」（含管理员码明文）会被打进部署包。
+        "·开发文档/上线凭据.md",
+        "开发文档/上线凭据.md",
+        "·截图和备忘录/screen.png",
     ):
         assert _ignored(path), f"{path} 必须被排除，否则会把密钥/数据/依赖打进部署包"
 
