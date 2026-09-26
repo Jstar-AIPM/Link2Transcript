@@ -152,8 +152,10 @@ class TaskCreatedResponse(BaseModel):
 
 
 class CreateTaskFromUrlRequest(BaseModel):
-    # 不用 min_length 拦截空串：交给平台校验层给出更明确的中文提示。
-    url: str = Field(max_length=2048)
+    # 输入可以是干净的单条链接，也可以是 App「复制链接」得到的**整段分享文案**
+    # （标题 + 链接 + 口令）。不用 min_length 拦截空串，交由平台校验层给出更明确的中文提示。
+    # 上限放宽到 4096：真实链接本身很短，多出来的富余是给分享文案的。
+    url: str = Field(max_length=4096)
 
 
 class TaskStatusResponse(BaseModel):

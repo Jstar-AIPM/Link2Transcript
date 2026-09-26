@@ -61,3 +61,13 @@ def test_runtime_files_are_kept_in_deploy_package():
         "skill/SKILL.md",
     ):
         assert not _ignored(path), f"{path} 必须保留，否则线上无法启动"
+
+
+def test_gitignore_excludes_internal_docs_and_secrets():
+    """仓库即将公开：内部文档、截图、密钥、运行数据必须被 .gitignore 挡住。
+
+    这条测试防的是“以后改了忽略规则，把内部文档/凭据又放进去”的回归。
+    """
+    gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    for pattern in ("data/", "开发文档/", "·开发文档/", "·截图*/", ".env"):
+        assert pattern in gitignore, f".gitignore 必须包含 {pattern}"

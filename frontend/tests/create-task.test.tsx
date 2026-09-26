@@ -139,14 +139,39 @@ describe("B 站链接模式", () => {
     expect(document.body.textContent).toContain("单条内容时长上限 360 分钟");
   });
 
-  it("链接格式不对时给出与后端一致的提示", async () => {
+  it("输入里没有链接时，提示整段粘贴（与后端一致）", async () => {
     await renderPanel();
     const input = await switchToUrl();
     fireEvent.change(input, { target: { value: "随便写的东西" } });
     fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
 
-    await screen.findByText("链接格式不正确，请粘贴完整的 B 站视频链接");
+    await screen.findByText("没有找到链接，请把包含链接的分享内容整段粘贴进来");
     expect(push).not.toHaveBeenCalled();
+  });
+
+  it("整段粘贴分享文案也能提交（自动识别其中的链接）", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes("/tasks/from-url")) {
+        // 发送的是原始输入，提取交给后端
+        const body = JSON.parse(String(init?.body)) as { url: string };
+        expect(body.url).toContain("https://www.bilibili.com/video/BV1VVhk6pEiR");
+        return Promise.resolve(jsonResponse({ task_id: "bv-2", status: "pending" }, true, 202));
+      }
+      return Promise.resolve(jsonResponse(samples.config));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await renderPanel();
+    const input = await switchToUrl();
+    fireEvent.change(input, {
+      target: {
+        value:
+          "3.30 复制打开抖音，看看【某人的作品】标题在这 https://www.bilibili.com/video/BV1VVhk6pEiR X@M.Wz :7pm",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/tasks/bv-2"));
   });
 
   it("合法链接提交成功后跳转", async () => {

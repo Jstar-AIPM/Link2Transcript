@@ -27,6 +27,26 @@ MAX_URL_LENGTH = 2048
 
 INVALID_URL_MESSAGE = "链接格式不正确，请粘贴完整的视频链接"
 
+#: 用户在 App 里点“复制链接”时，拿到的是**一整段分享文案**（标题 + 链接 + 口令）。
+#: 工具应当接受整段粘贴，由我们把它里真实的链接提取出来 —— 不让用户去于工删多余文字。
+URL_IN_TEXT_PATTERN = re.compile(r"https?://[^\s\u3000<>\"']+", re.IGNORECASE)
+#: 链接贴在句末时常被标点粘上，提取后要去掉
+TRAILING_PUNCTUATION = "。，、；：！？）】》」』…,.!?;:)]}\"'"
+NO_URL_IN_TEXT_MESSAGE = "没有找到链接，请把包含链接的分享内容整段粘贴进来"
+
+
+def first_url_in_text(raw: str) -> str | None:
+    """从一段（可能带标题/口令的）分享文案里提取第一个 http(s) 链接。
+
+    找不到则返回 ``None``。只取第一个链接：分享文案里通常就一个。
+    """
+    if not isinstance(raw, str):
+        return None
+    match = URL_IN_TEXT_PATTERN.search(raw)
+    if match is None:
+        return None
+    return match.group(0).rstrip(TRAILING_PUNCTUATION)
+
 # B 站：普通投稿视频 /video/BVxxxxxxxxxx 或 /video/av123456
 BILIBILI_DOMAINS = {"bilibili.com"}
 BILIBILI_SHORT_LINK_DOMAINS = {"b23.tv"}
@@ -126,7 +146,15 @@ class PlatformService:
         self._short_link_resolver = short_link_resolver or self._request_short_link
 
     def resolve(self, raw_url: str) -> ResolvedSource:
-        normalized = self._validate_syntax(raw_url)
+        # 支持两种输入：干净的单条链接，或 App「复制链接」拿到的整段分享文案。
+        # 前者与后者在这里统一：先从文本里提取真实链接，再走平台识别。
+        candidate = first_url_in_text(raw_url)
+        if candidate is None:
+            if isinstance(raw_url, str) and raw_url.strip():
+                raise AppError("INVALID_SOURCE_URL", NO_URL_IN_TEXT_MESSAGE)
+            raise AppError("INVALID_SOURCE_URL", INVALID_URL_MESSAGE)
+
+        normalized = self._validate_syntax(candidate)
         host = self._host_of(normalized)
         adapter = self._adapter_for(host)
         if adapter is None:
@@ -145,7 +173,8 @@ class PlatformService:
         return ResolvedSource(
             platform=adapter.platform,
             url=canonical,
-            original_url=raw_url.strip(),
+            # 存提取出来的链接（而不是整段分享文案），界面上“原始地址”更干净
+            original_url=candidate,
             video_id=video_id,
         )
 

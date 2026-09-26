@@ -89,3 +89,17 @@ def test_short_link_is_resolved_before_task_creation(client, settings):
     record = TaskService(settings.tasks_dir).get(response.json()["task_id"])
     assert record.source_url == "https://b23.tv/abcdefg"
     assert record.resolved_url == BILIBILI_URL
+
+
+def test_pasted_share_text_is_accepted_and_url_extracted(client, settings):
+    """用户只做“粘贴”动作：输入框里可能是标题 + 链接 + 口令的一整段文字。"""
+    text = (
+        "3.30 复制打开抖音，看看【朴素之道的作品】如何练好字，学好英语口语 "
+        f"{BILIBILI_URL}/ X@M.Wz :7pm kpD:/ 03/17"
+    )
+    response = client.post("/api/v1/tasks/from-url", json={"url": text})
+    assert response.status_code == 202
+    record = TaskService(settings.tasks_dir).get(response.json()["task_id"])
+    # 存下来的是提取出来的链接，而不是整段文案
+    assert record.resolved_url == f"{BILIBILI_URL}/"
+    assert record.source_url == f"{BILIBILI_URL}/"

@@ -150,3 +150,41 @@ def test_short_link_cannot_switch_platform():
     with pytest.raises(AppError) as exc_info:
         service.resolve("https://v.douyin.com/abcdEF/")
     assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+
+
+# ---------------------------------------------------------------------------
+# 粘贴整段分享文案：自动提取真实链接
+# ---------------------------------------------------------------------------
+
+
+def test_share_text_with_noise_extracts_url():
+    """用户在 App 里点“复制链接”，拿到的是标题 + 链接 + 口令的一大段文字。"""
+    text = (
+        "3.30 复制打开抖音，看看【朴素之道的作品】如何练好字，学好英语口语 "
+        "https://www.bilibili.com/video/BV1BqhB6nEdN?p=1 X@M.Wz :7pm kpD:/ 03/17"
+    )
+    resolved = make_service().resolve(text)
+    assert resolved.platform == Platform.BILIBILI
+    assert resolved.video_id == "BV1BqhB6nEdN"
+    # 存的是提取出来的链接，而不是整段文案
+    assert resolved.original_url == "https://www.bilibili.com/video/BV1BqhB6nEdN?p=1"
+
+
+def test_share_text_url_with_trailing_punctuation_is_trimmed():
+    resolved = make_service().resolve("看这个视频 https://www.bilibili.com/video/BV1BqhB6nEdN。")
+    assert resolved.video_id == "BV1BqhB6nEdN"
+
+
+def test_share_text_works_for_unsupported_platform_too():
+    """能提取出链接（即使该平台尚未启用，也应是 UNSUPPORTED_PLATFORM 而不是“没有链接”）。"""
+    text = "9.41 复制打开抖音 https://v.douyin.com/LnXEkdYvgMM/ w@S.LW GiP:/ 03/23"
+    with pytest.raises(AppError) as exc_info:
+        PlatformService().resolve(text)
+    assert exc_info.value.code == "UNSUPPORTED_PLATFORM"
+
+
+def test_share_text_without_any_link_is_rejected(user_copy_checker):
+    with pytest.raises(AppError) as exc_info:
+        make_service().resolve("今天分享一个视频，忘了贴链接")
+    assert exc_info.value.code == "INVALID_SOURCE_URL"
+    user_copy_checker(exc_info.value.message)
