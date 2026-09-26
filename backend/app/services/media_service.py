@@ -95,8 +95,17 @@ class MediaService:
         self._run_ffmpeg(command, destination, "未能从视频中提取音频", "AUDIO_EXTRACTION_FAILED")
         return destination
 
-    def slice_audio(self, source: Path, destination: Path, start_seconds: float) -> Path:
-        """从 ``start_seconds`` 处截取到结尾，用于断点续写（阶段 3B）。
+    def slice_audio(
+        self,
+        source: Path,
+        destination: Path,
+        start_seconds: float,
+        duration_seconds: float | None = None,
+    ) -> Path:
+        """截取一段音频。
+
+        - 只给 ``start_seconds`` 时截到结尾，用于断点续写（阶段 3B）；
+        - 同时给 ``duration_seconds`` 时只截取该长度，用于长内容分窗转写（阶段 3.5）。
 
         ``-ss`` 放在 ``-i`` 之前：走快速定位，长音频不需要从头解码。
         """
@@ -116,10 +125,11 @@ class MediaService:
             "1",
             "-ar",
             "16000",
-            "-c:a",
-            "pcm_s16le",
-            str(destination),
         ]
+        if duration_seconds is not None and duration_seconds > 0:
+            # -t 是输出选项，放在输入之后、输出文件之前
+            command.extend(["-t", f"{duration_seconds:.3f}"])
+        command.extend(["-c:a", "pcm_s16le", str(destination)])
         self._run_ffmpeg(command, destination, "未能续写已中断的任务", "AUDIO_SLICE_FAILED")
         return destination
 

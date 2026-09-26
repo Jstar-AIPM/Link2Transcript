@@ -126,26 +126,80 @@ describe("本地文件模式", () => {
   });
 });
 
-describe("B 站链接模式", () => {
+describe("链接模式（B 站 / 小红书）", () => {
   async function switchToUrl() {
-    fireEvent.click(screen.getByRole("tab", { name: "粘贴 B 站链接" }));
-    return (await screen.findByLabelText("B 站视频链接")) as HTMLInputElement;
+    fireEvent.click(screen.getByRole("tab", { name: "粘贴视频链接" }));
+    return (await screen.findByLabelText("视频链接")) as HTMLInputElement;
   }
 
-  it("默认给出多 P 与时长上限提示", async () => {
+  it("默认给出分集与时长上限提示", async () => {
     await renderPanel();
     await switchToUrl();
-    expect(document.body.textContent).toContain("多 P 视频请粘贴某一个分集的链接");
-    expect(document.body.textContent).toContain("单条内容时长上限 360 分钟");
+    expect(document.body.textContent).toContain("分集视频请粘贴你要提取的那一集");
+    expect(document.body.textContent).toContain("单条内容时长上限 6 小时");
   });
 
-  it("链接格式不对时给出与后端一致的提示", async () => {
+  it("输入里没有链接时，提示整段粘贴（与后端一致）", async () => {
     await renderPanel();
     const input = await switchToUrl();
     fireEvent.change(input, { target: { value: "随便写的东西" } });
     fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
 
-    await screen.findByText("链接格式不正确，请粘贴完整的 B 站视频链接");
+    await screen.findByText("没有找到链接，请把包含链接的分享内容整段粘贴进来");
+    expect(push).not.toHaveBeenCalled();
+  });
+
+  it("整段粘贴分享文案也能提交（自动识别其中的链接）", async () => {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).includes("/tasks/from-url")) {
+        // 发送的是原始输入，提取交给后端
+        const body = JSON.parse(String(init?.body)) as { url: string };
+        expect(body.url).toContain("https://www.bilibili.com/video/BV1VVhk6pEiR");
+        return Promise.resolve(jsonResponse({ task_id: "bv-2", status: "pending" }, true, 202));
+      }
+      return Promise.resolve(jsonResponse(samples.config));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await renderPanel();
+    const input = await switchToUrl();
+    fireEvent.change(input, {
+      target: {
+        value:
+          "3.30 复制打开抖音，看看【某人的作品】标题在这 https://www.bilibili.com/video/BV1VVhk6pEiR X@M.Wz :7pm",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/tasks/bv-2"));
+  });
+
+  it("小红书链接也能提交", async () => {
+    const fetchMock = vi.fn((url: string) => {
+      if (String(url).includes("/tasks/from-url")) {
+        return Promise.resolve(jsonResponse({ task_id: "xhs-1", status: "pending" }, true, 202));
+      }
+      return Promise.resolve(jsonResponse(samples.config));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await renderPanel();
+    const input = await switchToUrl();
+    fireEvent.change(input, {
+      target: { value: "https://www.xiaohongshu.com/explore/6ab48461000000000b00692e" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await waitFor(() => expect(push).toHaveBeenCalledWith("/tasks/xhs-1"));
+  });
+
+  it("抖音链接给出明确的不支持提示", async () => {
+    await renderPanel();
+    const input = await switchToUrl();
+    fireEvent.change(input, { target: { value: "https://v.douyin.com/8YQ3Nzpe-wc/" } });
+    fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
+
+    await screen.findByText("当前仅支持 B 站与小红书链接，请检查后重试");
     expect(push).not.toHaveBeenCalled();
   });
 
@@ -185,12 +239,12 @@ describe("线上关闭本地上传时（只支持链接）", () => {
 
     render(<CreateTaskPanel />);
 
-    await screen.findByText(/当前环境只支持粘贴 B 站视频链接/);
+    await screen.findByText(/当前仅支持粘贴视频链接/);
     // 上传入口消失：没有模式切换、也没有文件选择框
     expect(screen.queryByRole("tab", { name: "上传本地文件" })).toBeNull();
     expect(document.querySelector("#file-input")).toBeNull();
 
-    const input = (await screen.findByLabelText("B 站视频链接")) as HTMLInputElement;
+    const input = (await screen.findByLabelText("视频链接")) as HTMLInputElement;
     fireEvent.change(input, { target: { value: "https://www.bilibili.com/video/BV1VVhk6pEiR" } });
     fireEvent.click(screen.getByRole("button", { name: "开始提取" }));
 
@@ -208,7 +262,7 @@ describe("B 站登录态失效时", () => {
     );
 
     render(<CreateTaskPanel />);
-    fireEvent.click(await screen.findByRole("tab", { name: "粘贴 B 站链接" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "粘贴视频链接" }));
 
     await screen.findByText(/当前字幕提取不可用/);
     expect(document.body.textContent).toContain("链接任务会改用语音转写");

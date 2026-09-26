@@ -45,6 +45,9 @@ class SourceType(StrEnum):
 class Platform(StrEnum):
     LOCAL = "local"
     BILIBILI = "bilibili"
+    # 阶段 5 预留：适配器与链路就绪后再启用（当前解析层会拒绝）
+    DOUYIN = "douyin"
+    XIAOHONGSHU = "xiaohongshu"
 
 
 class ExtractMethod(StrEnum):
@@ -149,8 +152,10 @@ class TaskCreatedResponse(BaseModel):
 
 
 class CreateTaskFromUrlRequest(BaseModel):
-    # 不用 min_length 拦截空串：交给平台校验层给出更明确的中文提示。
-    url: str = Field(max_length=2048)
+    # 输入可以是干净的单条链接，也可以是 App「复制链接」得到的**整段分享文案**
+    # （标题 + 链接 + 口令）。不用 min_length 拦截空串，交由平台校验层给出更明确的中文提示。
+    # 上限放宽到 4096：真实链接本身很短，多出来的富余是给分享文案的。
+    url: str = Field(max_length=4096)
 
 
 class TaskStatusResponse(BaseModel):
@@ -174,6 +179,8 @@ class TaskStatusResponse(BaseModel):
     partial_result_available: bool = False
     #: 用户是否还能取消（终态任务不可取消）
     cancellable: bool = False
+    #: 排队位置：还没开始时，前面还有多少个任务（0 = 排在最前或已在处理）
+    queue_ahead: int = 0
     error: TaskError | None
     artifacts: dict[str, str | None]
 

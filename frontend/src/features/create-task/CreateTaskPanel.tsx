@@ -23,7 +23,8 @@ import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useServiceConfig } from "@/features/service-config/useServiceConfig";
 import { ApiError, api } from "@/lib/api/client";
 import { uploadFile, type UploadHandle } from "@/lib/api/upload";
-import { looksLikeBilibiliLink } from "@/lib/constants";
+import { extractUrlFromText, isSupportedLink } from "@/lib/constants";
+import { formatLimitMinutes } from "@/lib/format";
 
 type Mode = "file" | "url";
 
@@ -108,14 +109,25 @@ export function CreateTaskPanel() {
   async function submitUrl() {
     const value = url.trim();
     if (!value) {
-      setSubmit({ kind: "error", message: "请先粘贴 B 站视频链接", code: "MISSING_URL" });
+      setSubmit({ kind: "error", message: "请先粘贴视频链接", code: "MISSING_URL" });
       return;
     }
-    if (!looksLikeBilibiliLink(value)) {
+    // 支持整段粘贴分享文案：先尝试把链接找出来，再判断平台。
+    // 真正的提取与白名单校验在后端；这里只做零成本的即时反馈。
+    const extracted = extractUrlFromText(value);
+    if (!extracted) {
       setSubmit({
         kind: "error",
-        message: "链接格式不正确，请粘贴完整的 B 站视频链接",
+        message: "没有找到链接，请把包含链接的分享内容整段粘贴进来",
         code: "INVALID_SOURCE_URL",
+      });
+      return;
+    }
+    if (!isSupportedLink(extracted)) {
+      setSubmit({
+        kind: "error",
+        message: "当前仅支持 B 站与小红书链接，请检查后重试",
+        code: "UNSUPPORTED_PLATFORM",
       });
       return;
     }
@@ -123,6 +135,8 @@ export function CreateTaskPanel() {
     setNotice(null);
     setSubmit({ kind: "creating" });
     try {
+      // 发送原始输入：由后端统一负责“从分享文案里提取链接”，
+      // 避免前后端两套提取逻辑逐渐不一致。
       const created = await api.createTaskFromUrl(value);
       goToTask(created.task_id);
     } catch (error) {
@@ -161,12 +175,12 @@ export function CreateTaskPanel() {
             disabled={busy}
             options={[
               { value: "file", label: "上传本地文件" },
-              { value: "url", label: "粘贴 B 站链接" },
+              { value: "url", label: "粘贴视频链接" },
             ]}
           />
         ) : (
           <p className="rounded-control bg-sunken px-3 py-2 text-[13px] leading-relaxed text-body">
-            当前环境只支持粘贴 B 站视频链接（线上暂不支持上传本地文件）。
+            当前仅支持粘贴视频链接，上传本地文件暂未开放。
           </p>
         )}
 
@@ -189,14 +203,14 @@ export function CreateTaskPanel() {
           ) : (
             <div>
               <label htmlFor="url-input" className="text-[13px] text-muted">
-                B 站视频链接
+                视频链接
               </label>
               <input
                 id="url-input"
-                type="url"
+                type="text"
                 inputMode="url"
                 autoComplete="off"
-                placeholder="https://www.bilibili.com/video/BV..."
+                placeholder="粘贴 B 站 / 小红书链接，或整段分享文案"
                 value={url}
                 disabled={busy}
                 onChange={(event) => {
@@ -212,9 +226,10 @@ export function CreateTaskPanel() {
                 </p>
               ) : null}
               <p className="mt-2 text-[13px] leading-relaxed text-muted">
-                支持单个视频链接。多 P 视频请粘贴某一个分集的链接。
+                粘贴链接即可，也可以整段粘贴 App 里的分享文案（会自动识别其中的链接）。
+                分集视频请粘贴你要提取的那一集。
                 {maxMediaMinutes && maxMediaMinutes > 0
-                  ? ` 单条内容时长上限 ${maxMediaMinutes} 分钟。`
+                  ? ` 单条内容时长上限 ${formatLimitMinutes(maxMediaMinutes)}。`
                   : " 不限制内容时长。"}
               </p>
             </div>

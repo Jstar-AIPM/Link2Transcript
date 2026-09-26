@@ -28,6 +28,9 @@ class Transcription:
     segments: list[TranscriptSegment]
     language: str | None
     duration_seconds: float | None
+    #: VAD 后剩余的有效语音时长（用于“整段几乎都是静音/音乐”的判定）。
+    #: 分窗转写时由调用方逐窗累加，做全局判定（阶段 3.5）。
+    duration_after_vad: float | None = None
 
 
 class TranscriptionService:
@@ -160,22 +163,27 @@ class TranscriptionService:
             raise AppError("EMPTY_TRANSCRIPT", DEFAULT_EMPTY_TRANSCRIPT_MESSAGE)
         duration = getattr(info, "duration", None)
         language = getattr(info, "language", None)
+        duration_after_vad = getattr(info, "duration_after_vad", None)
         return Transcription(
             text=text,
             segments=segments,
             language=language,
             duration_seconds=float(duration) if duration is not None else None,
+            duration_after_vad=(
+                float(duration_after_vad) if duration_after_vad is not None else None
+            ),
         )
 
     @staticmethod
-    def _ensure_speech_present(info) -> None:
+    def ensure_speech_present(duration, duration_after_vad) -> None:
         """根据 VAD 结果判定内容里到底有没有人声。
 
         只对“整段几乎都是静音/音乐”这种明确情况报警，阈值取得很保守，
         避免误伤“人声稀疏但确实有内容”的音视频。
+
+        抽成静态方法是因为分窗转写（阶段 3.5）无法在单窗内判定：
+        某个窗口全静音是正常的，必须把所有窗口的 VAD 结果累加后统一判定。
         """
-        duration = getattr(info, "duration", None)
-        duration_after_vad = getattr(info, "duration_after_vad", None)
         if duration is None or duration_after_vad is None:
             return
         try:
@@ -187,3 +195,9 @@ class TranscriptionService:
             return
         if speech < MIN_SPEECH_SECONDS or (speech / total) < MIN_SPEECH_RATIO:
             raise AppError("SILENT_AUDIO", DEFAULT_SILENT_AUDIO_MESSAGE)
+
+    @classmethod
+    def _ensure_speech_present(cls, info) -> None:
+        cls.ensure_speech_present(
+            getattr(info, "duration", None), getattr(info, "duration_after_vad", None)
+        )

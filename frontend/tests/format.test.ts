@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fileExtension, formatDuration, formatPercent, formatTimestamp } from "@/lib/format";
+import { fileExtension, formatDuration, formatLimitMinutes, formatPercent, formatTimestamp } from "@/lib/format";
 
 describe("时长格式化", () => {
   it("超过一小时用「小时/分/秒」，与后端说法一致", () => {
@@ -31,6 +31,15 @@ describe("进度展示", () => {
     expect(formatPercent(100)).toBe("100%");
     expect(formatPercent(140)).toBe("100%");
     expect(formatPercent(null)).toBe("0%");
+  });
+});
+
+describe("时长上限文案", () => {
+  it("整小时说「小时」，否则说「分钟」（与后端一致）", () => {
+    expect(formatLimitMinutes(120)).toBe("2 小时");
+    expect(formatLimitMinutes(360)).toBe("6 小时");
+    expect(formatLimitMinutes(180)).toBe("3 小时");
+    expect(formatLimitMinutes(90)).toBe("90 分钟");
   });
 });
 

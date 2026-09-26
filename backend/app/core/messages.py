@@ -27,14 +27,16 @@ def format_limit(minutes: int) -> str:
 def video_too_long_message(duration_seconds: float, limit_minutes: int) -> str:
     return (
         f"该视频时长约 {format_duration(duration_seconds)}，"
-        f"超过 {format_limit(limit_minutes)}上限。请分段处理，或改用本地文件上传"
+        f"超过 {format_limit(limit_minutes)}上限，暂时无法处理。"
+        "请换一个时长更短的视频后重试"
     )
 
 
 def file_too_long_message(duration_seconds: float, limit_minutes: int) -> str:
     return (
         f"该文件时长约 {format_duration(duration_seconds)}，"
-        f"超过 {format_limit(limit_minutes)}上限。请分段处理后重试"
+        f"超过 {format_limit(limit_minutes)}上限，暂时无法处理。"
+        "请剪辑成更短的片段后重试"
     )
 
 

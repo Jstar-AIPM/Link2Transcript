@@ -32,6 +32,8 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# 模板文件要入库：陌生人 clone 后需要 cp 它才能启动（只有本地占位地址，无密钥）
+!.env.example
 
 # vercel
 .vercel

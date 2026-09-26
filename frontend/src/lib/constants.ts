@@ -19,11 +19,27 @@ export function isSupportedFilename(filename: string): boolean {
 }
 
 /**
- * B 站链接的弱校验：只判断「像不像」，不做平台白名单（那是后端的事）。
- * 支持 bilibili.com 子域与 b23.tv 短链。
+ * 从粘贴文本里提取第一个 http(s) 链接。
+ *
+ * 用户在 App 里点“复制链接”得到的往往是**一整段分享文案**（标题 + 链接 + 口令），
+ * 因此输入框要允许整段粘贴，由我们从文本里找出真实链接。
+ * 行为与后端的 `first_url_in_text` 保持一致（真正的把关仍在后端）。
  */
-export function looksLikeBilibiliLink(value: string): boolean {
-  return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv)\//i.test(value.trim());
+export function extractUrlFromText(value: string): string | null {
+  const match = /https?:\/\/[^\s\u3000<>"']+/i.exec(value ?? "");
+  if (!match) return null;
+  // 链接贴在句末时常被标点粘上，去掉尾部标点
+  return match[0].replace(/[。，、；：！？）】》」』…,.!?;:)\]}"']+$/, "");
+}
+
+/**
+ * 当前支持平台的弱校验（只判断“像不像”，真白名单在后端）：
+ * B 站子域 / b23.tv 短链；小红书 xiaohongshu.com / xhslink 短链。
+ */
+export function isSupportedLink(url: string): boolean {
+  return /^https?:\/\/([\w-]+\.)*(bilibili\.com|b23\.tv|xiaohongshu\.com|xhslink\.com|xhslink\.cn)\//i.test(
+    url.trim(),
+  );
 }
 
 /** 大文件提示用：把字节说成人话（与后端一致用 MB / GB） */

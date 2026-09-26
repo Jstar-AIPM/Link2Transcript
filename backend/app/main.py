@@ -3,12 +3,10 @@ from __future__ import annotations
 import logging
 import threading
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from backend.app.api.auth import router as auth_router
 from backend.app.api.tasks import router as tasks_router
@@ -16,6 +14,7 @@ from backend.app.core.config import Settings, get_settings
 from backend.app.core.errors import AppError
 from backend.app.core.logging import configure_logging
 from backend.app.core.trace import get_trace_id, new_trace_id, set_trace_id
+from backend.app.schemas.task import Platform
 from backend.app.services.cleanup_service import CleanupService
 from backend.app.services.backup_service import BackupScheduler, BackupService
 from backend.app.services.bilibili_api_service import BilibiliApiService
@@ -32,6 +31,7 @@ from backend.app.services.storage_service import build_storage
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
 from backend.app.services.transcription_service import TranscriptionService
+from backend.app.services.xiaohongshu_service import XiaohongshuService
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +79,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             max_media_seconds=app_settings.max_media_seconds,
             max_media_minutes=app_settings.max_media_minutes,
         )
+    # 阶段 5：小红书链路（短链已在 PlatformService 解析成含 xsec_token 的真实地址）
+    xiaohongshu_service = XiaohongshuService(
+        cookie=app_settings.xiaohongshu_cookie,
+        cookie_file_dir=app_settings.session_dir,
+        proxy=app_settings.platform_proxy,
+        max_media_seconds=app_settings.max_media_seconds,
+        max_media_minutes=app_settings.max_media_minutes,
+        max_download_bytes=app_settings.max_download_bytes,
+    )
     # 阶段 6：B 站登录态自检（字幕路径依赖它；失效时后台告警，不阻塞启动）
     credential_service = BilibiliCredentialService(app_settings.bilibili_cookie)
     invite_service = InviteService(
@@ -112,6 +121,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         subtitle_service=subtitle_service,
         # 链接链路的实际实现（B 站 API 或 yt-dlp）
         platform_media_service=platform_media_service,
+        # 按平台选择链路实现：当前 B 站 + 小红书
+        platform_media_services={Platform.XIAOHONGSHU: xiaohongshu_service},
         uploads_dir=app_settings.uploads_dir,
         audio_dir=app_settings.audio_dir,
         downloads_dir=app_settings.downloads_dir,
@@ -122,6 +133,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         backup_service=backup_service,
         progress_persist_interval_seconds=app_settings.progress_persist_interval_seconds,
         resume_overlap_seconds=app_settings.resume_overlap_seconds,
+        # 阶段 3.5：长内容分窗转写（内存与总时长解耦，中断最多丢一个窗口）
+        transcribe_window_seconds=app_settings.transcribe_window_seconds,
+        transcribe_window_overlap_seconds=app_settings.transcribe_window_overlap_seconds,
     )
 
     @asynccontextmanager
@@ -176,6 +190,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.processor = processor
     app.state.invite_service = invite_service
     app.state.platform_media_service = platform_media_service
+    app.state.xiaohongshu_service = xiaohongshu_service
     app.state.credential_service = credential_service
     app.state.storage = storage
     app.state.backup_service = backup_service
@@ -245,8 +260,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(tasks_router)
-    static_dir = Path(__file__).resolve().parent / "static"
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
     return app
 
 

@@ -7,16 +7,16 @@ import { CreateTaskPanel } from "@/features/create-task/CreateTaskPanel";
 import { HomeGate } from "@/features/auth/HomeGate";
 
 const STEPS: Array<[string, string, string]> = [
-  ["01", "提交内容", "上传音频/视频，或粘贴 B 站视频链接"],
-  ["02", "看着它生成", "逐段实时出现，进度可见，可随时取消"],
+  ["01", "提交内容", "粘贴 B 站 / 小红书链接，也可以上传本地音视频"],
+  ["02", "等待生成", "逐段实时出现，进度可见，随时可以取消"],
   ["03", "阅读与导出", "在线阅读、复制全文，导出 Markdown / TXT"],
 ];
 
-const LIMITS: Array<[string, string]> = [
-  ["支持格式", "MP3 / M4A / WAV / MP4 / MOV"],
-  ["内容时长", "单条上限 6 小时，4–5 小时播客正常支持"],
-  ["视频链接", "目前支持 B 站单个视频（多 P 请贴分集链接）"],
-  ["不支持", "画面烧录字幕（硬字幕）、大会员专享视频"],
+/** 只展示用户真正需要的信息；技术实现细节（格式清单、失败边界）不在首页展开。 */
+const SUPPORT: Array<[string, string]> = [
+  ["支持平台", "B 站、小红书"],
+  ["单条时长", "最长 2 小时"],
+  ["导出格式", "Markdown / TXT"],
 ];
 
 export default function HomePage() {
@@ -37,20 +37,12 @@ export default function HomePage() {
               的逐字稿。
             </h1>
             <p className="mt-5 max-w-[56ch] text-[18px] text-muted">
-              上传本地文件，或粘贴 B 站链接。长内容会边转写边出现在页面上，
-              中途刷新或服务重启都不会白跑，完成后可直接阅读、复制或导出。
+              粘贴 B 站或小红书视频链接，也可以上传本地音视频。从提交到拿到逐字稿全程可见，
+              中途刷新也不会丢进度，完成后可随时阅读、复制或下载。
             </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2 font-mono text-[13px] text-muted">
-              <span>提交</span>
-              <span className="text-faint">→</span>
-              <span>解析 / 下载</span>
-              <span className="text-faint">→</span>
-              <span>转写</span>
-              <span className="text-faint">→</span>
-              <span>逐段呈现</span>
-              <span className="text-faint">→</span>
-              <span>导出</span>
-            </div>
+            <p className="mt-3 text-[15px] text-muted">
+              有字幕的视频直接提取，没有字幕也能自动转写。
+            </p>
 
             <div className="mt-14 grid grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-7 max-[900px]:grid-cols-1 max-[900px]:gap-4 max-[900px]:mt-9">
               <HomeGate>
@@ -59,12 +51,13 @@ export default function HomePage() {
 
               <div className="flex flex-col gap-5">
                 <Card className="px-6 pt-5 pb-2">
+                  <Eyebrow className="mb-1">怎么用</Eyebrow>
                   {STEPS.map(([number, title, detail]) => (
                     <div
                       key={number}
                       className="grid grid-cols-[34px_1fr] gap-3 border-b border-line py-3 last:border-b-0"
                     >
-                      <span className="pt-0.5 font-mono text-xs text-muted">{number}</span>
+                      <span className="pt-0.5 font-mono text-xs text-accent">{number}</span>
                       <div>
                         <p className="text-[14.5px] font-semibold">{title}</p>
                         <p className="text-[13.5px] text-muted">{detail}</p>
@@ -74,15 +67,16 @@ export default function HomePage() {
                 </Card>
 
                 <Card className="px-6 pt-5 pb-5">
-                  <Eyebrow className="mb-2">能力与限制</Eyebrow>
+                  <Eyebrow className="mb-2">支持范围</Eyebrow>
                   <dl className="space-y-2.5">
-                    {LIMITS.map(([label, value]) => (
+                    {SUPPORT.map(([label, value]) => (
                       <div key={label} className="grid grid-cols-[72px_1fr] gap-3">
                         <dt className="text-[13px] text-muted">{label}</dt>
                         <dd className="text-[13.5px] text-body">{value}</dd>
                       </div>
                     ))}
                   </dl>
+                  <p className="mt-3 text-[13px] text-faint">抖音正在接入中。</p>
                   <div className="mt-4 border-t border-line pt-3">
                     <RecentTaskLink />
                   </div>

@@ -152,6 +152,9 @@ def build_processor(
     backup_service=None,
     progress_persist_interval_seconds=1.0,
     resume_overlap_seconds=2.0,
+    transcribe_window_seconds=0.0,
+    transcribe_window_overlap_seconds=5.0,
+    platform_media_services=None,
 ):
     return TaskProcessor(
         task_service=TaskService(settings.tasks_dir),
@@ -164,6 +167,9 @@ def build_processor(
         backup_service=backup_service,
         progress_persist_interval_seconds=progress_persist_interval_seconds,
         resume_overlap_seconds=resume_overlap_seconds,
+        transcribe_window_seconds=transcribe_window_seconds,
+        transcribe_window_overlap_seconds=transcribe_window_overlap_seconds,
+        platform_media_services=platform_media_services,
         uploads_dir=settings.uploads_dir,
         audio_dir=settings.audio_dir,
         downloads_dir=settings.downloads_dir,

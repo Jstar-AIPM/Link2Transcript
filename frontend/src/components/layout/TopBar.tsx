@@ -30,7 +30,7 @@ export function TopBar({ children }: { children?: ReactNode }) {
             href="/"
             className="flex items-center gap-2.5 font-semibold tracking-[-0.01em] whitespace-nowrap"
           >
-            <span className="grid size-[22px] place-items-center rounded-[5px] bg-ink font-mono text-[11px] text-canvas">
+            <span className="grid size-[22px] place-items-center rounded-[5px] bg-accent-button font-mono text-[11px] text-white">
               稿
             </span>
             逐字稿提取器

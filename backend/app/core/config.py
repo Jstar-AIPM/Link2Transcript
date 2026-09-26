@@ -44,7 +44,9 @@ class Settings:
     whisper_compute_type: str
     task_poll_interval_seconds: int
     task_max_workers: int
-    max_media_minutes: int = 360
+    #: 内容时长上限（分钟）。本期内 B 站/抖音/小红书统一 120 分钟（2 小时）。
+    #: 超长内容由分窗转写（transcribe_window_seconds）支撑，上限可按需上调。0 = 不限制。
+    max_media_minutes: int = 120
     #: 是否允许上传本地文件。线上（veFaaS）同步调用请求体上限 16 MiB，
     #: 与本地 2 GB 上传冲突，因此线上关闭；本地开发默认开启。
     enable_local_upload: bool = True
@@ -69,12 +71,18 @@ class Settings:
     #: 普通邀请码规则：有效期（天）与可用次数
     invite_valid_days: int = 30
     invite_max_uses: int = 20
+    #: 每个邀请码每天可提交的任务数上限（防滥用：保护平台 Cookie 不被刷到风控、保护算力）。
+    #: 0 = 不限制；管理员码不受此限。与邀请码的「30 天 / 20 次登录」是两件事。
+    max_tasks_per_code_per_day: int = 30
     #: 链接链路后端：api（B 站 API，线上默认，机房 IP 不被 HTML 风控影响）/ ytdlp（后备）
     platform_backend: str = "api"
     #: 启动时后台预热语音识别模型（线上建议开启：权重数百 MB，预热后首个任务不用等）
     warmup_model: bool = False
     max_download_mb: int = 1024
     bilibili_cookie: str = ""
+    #: 小红书登录 Cookie（可选）：机房 IP 会被小红书判定为登录墙（实测返回的页面没有视频流），
+    #: 配置后可正常解析；也可用 PLATFORM_PROXY 改变出口。格式形如 "web_session=xxx; a1=yyy"。
+    xiaohongshu_cookie: str = ""
     platform_download_timeout_seconds: int = 1800
     platform_rate_limit_kbps: int | None = None
     platform_proxy: str = ""
@@ -83,6 +91,11 @@ class Settings:
     progress_persist_interval_seconds: float = 1.0
     resume_on_startup: bool = True
     resume_overlap_seconds: float = 2.0
+    # 阶段 3.5：长内容分窗转写。内容时长超过该窗口秒数时，改为按窗口切片逐段转写
+    # （内存占用与总时长解耦，中断最多丢一个窗口）。0 = 关闭，退化为整段一次转写。
+    transcribe_window_seconds: int = 1200
+    # 窗口之间的重叠秒数，避免切在词中间导致边界丢字（按时间戳去重）
+    transcribe_window_overlap_seconds: float = 5.0
     max_segments_per_task: int = 200_000
 
     @property
@@ -114,7 +127,8 @@ class Settings:
     def max_media_seconds(self) -> float:
         """内容时长上限。``max_media_minutes`` 为 0 表示不限制时长。
 
-        默认 360 分钟（6 小时）：足够覆盖 4–5 小时的播客，同时挡住夸张输入。
+        本期默认 120 分钟（2 小时），三个平台统一；超长内容由分窗转写支撑，
+        上限是配置项，可随时上调（例如 360 = 6 小时）。
         """
         if self.max_media_minutes <= 0:
             return float("inf")
@@ -189,11 +203,15 @@ def get_settings() -> Settings:
         ),
         invite_valid_days=max(1, int(os.getenv("INVITE_VALID_DAYS", "30"))),
         invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
+        max_tasks_per_code_per_day=max(
+            0, int(os.getenv("MAX_TASKS_PER_CODE_PER_DAY", "30"))
+        ),
         platform_backend=os.getenv("PLATFORM_BACKEND", "api").strip().lower(),
         warmup_model=_bool("WARMUP_MODEL", False),
-        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
+        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "120")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),
+        xiaohongshu_cookie=os.getenv("XIAOHONGSHU_COOKIE", "").strip(),
         platform_download_timeout_seconds=int(
             os.getenv("PLATFORM_DOWNLOAD_TIMEOUT_SECONDS", "1800")
         ),
@@ -205,5 +223,11 @@ def get_settings() -> Settings:
         ),
         resume_on_startup=_bool("RESUME_ON_STARTUP", True),
         resume_overlap_seconds=float(os.getenv("RESUME_OVERLAP_SECONDS", "2")),
+        transcribe_window_seconds=max(
+            0, int(os.getenv("TRANSCRIBE_WINDOW_SECONDS", "1200"))
+        ),
+        transcribe_window_overlap_seconds=max(
+            0.0, float(os.getenv("TRANSCRIBE_WINDOW_OVERLAP_SECONDS", "5"))
+        ),
         max_segments_per_task=int(os.getenv("MAX_SEGMENTS_PER_TASK", "200000")),
     )

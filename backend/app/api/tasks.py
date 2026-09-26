@@ -97,9 +97,36 @@ def _progress_percent(record: TaskRecord) -> float:
     return round(min(99.0, transcribed / duration * 100), 1)
 
 
+def _enforce_daily_quota(request: Request) -> None:
+    """每个邀请码每天的任务数上限（阶段 6.5）。
+
+    与邀请码自带的「30 天 / 20 次登录」是两件事：那个限制的是登录次数，
+    这里限制的是**提交任务的数量**（一个人登录一次仍可提交很多任务）。
+
+    管理员码不受限制；未强制登录（本地开发）时不做限制；0 表示关闭。
+    """
+    settings = request.app.state.settings
+    session = getattr(request.state, "session", None)
+    limit = settings.max_tasks_per_code_per_day
+    if session is None or session.is_admin or limit <= 0:
+        return
+    used = request.app.state.task_service.count_created_today(session.owner_id)
+    if used >= limit:
+        raise AppError(
+            "DAILY_LIMIT_REACHED",
+            f"今天的任务数量已达上限（{limit} 个），请明天再试",
+            status_code=429,
+        )
+
+
 def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse:
     now = datetime.now().astimezone()
     terminal = record.status in TERMINAL_STATUSES
+    queue_ahead = (
+        request.app.state.task_service.pending_ahead(record.task_id)
+        if record.status == TaskStatus.PENDING
+        else 0
+    )
     elapsed_until = record.updated_at if terminal else now
     estimated_remaining: float | None = None
     if record.status == TaskStatus.TRANSCRIBING and record.media_duration_seconds:
@@ -131,6 +158,7 @@ def _status_response(request: Request, record: TaskRecord) -> TaskStatusResponse
         progress_percent=_progress_percent(record),
         partial_result_available=record.partial_result_available,
         cancellable=not terminal,
+        queue_ahead=queue_ahead,
         error=record.error,
         artifacts={
             "markdown": f"/api/v1/tasks/{record.task_id}/download/markdown"
@@ -154,6 +182,7 @@ async def create_task(request: Request, file: UploadFile = File(...)) -> TaskCre
             status_code=403,
         )
     task_service = request.app.state.task_service
+    _enforce_daily_quota(request)
     filename = _safe_display_filename(file.filename)
     media_type = media_type_for_filename(filename)
     suffix = Path(filename).suffix.lower()
@@ -215,6 +244,7 @@ def create_task_from_url(
     platform_service = request.app.state.platform_service
     task_service = request.app.state.task_service
 
+    _enforce_daily_quota(request)
     source = platform_service.resolve(payload.url)
     task_id = task_service.new_task_id()
     record = task_service.create(
