@@ -68,6 +68,7 @@ class XiaohongshuService:
     # ------------------------------------------------------------- 对外接口
 
     def probe(self, url: str) -> VideoMeta:
+        logger.info("xhs_probe has_xsec_token=%s", "xsec_token=" in url)
         info, _ = self._extract(url, download=False)
         duration = info.get("duration")
         duration_seconds = float(duration) if isinstance(duration, (int, float)) else None

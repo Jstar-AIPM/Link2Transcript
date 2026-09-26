@@ -15,14 +15,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Callable, Sequence
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from backend.app.core.errors import AppError
 from backend.app.schemas.task import Platform
 
+
+logger = logging.getLogger(__name__)
 
 MAX_URL_LENGTH = 2048
 
@@ -288,4 +291,14 @@ class PlatformService:
                 "Referer": adapter.homepage or url,
             },
         )
-        return response.url
+        # 诊断用：小红书短链必须把 xsec_token 带到最终地址上，否则后续取不到视频流。
+        # 只记“有没有 token”，不记 token 本身。
+        final = response.url
+        query = parse_qs(urlsplit(final).query)
+        logger.info(
+            "short_link_resolved platform=%s host=%s has_xsec_token=%s",
+            adapter.platform.value,
+            self._host_of(final),
+            "xsec_token" in query,
+        )
+        return final
