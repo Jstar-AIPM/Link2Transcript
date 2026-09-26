@@ -139,3 +139,5 @@ websockets==17.1
     # via uvicorn
 yt-dlp==2026.8.19
     # via transcript-extractor
+zhconv==1.4.3
+    # via transcript-extractor

@@ -36,6 +36,7 @@ from backend.app.services.media_service import MediaService
 from backend.app.services.segment_store import SegmentStore
 from backend.app.services.subtitle_service import SubtitleService
 from backend.app.services.task_service import TaskService
+from backend.app.services.text_normalizer import normalize_segment
 from backend.app.services.transcription_service import TranscriptionService
 
 
@@ -472,7 +473,8 @@ class TaskProcessor:
             transcription = self.transcription_service.transcribe(
                 resume.audio_path,
                 on_stage=progress.on_stage,
-                on_segment=progress.on_segment,
+                # 落盘前先规范化：屏幕上看到的与下载的文件保持一致
+                on_segment=lambda segment: progress.on_segment(normalize_segment(segment)),
                 start_offset=resume.start_offset,
                 allow_empty_result=resume.resumed,
             )
@@ -536,7 +538,8 @@ class TaskProcessor:
                 transcription = self.transcription_service.transcribe(
                     chunk_path,
                     on_stage=progress.on_stage,
-                    on_segment=progress.on_segment,
+                    # 落盘前先规范化（繁体 → 简体 + 常见错字）
+                    on_segment=lambda segment: progress.on_segment(normalize_segment(segment)),
                     start_offset=slice_start,
                     # 单个窗口全静音是正常的，不能据此判定整段没有人声。
                     allow_empty_result=True,

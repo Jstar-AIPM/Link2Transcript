@@ -18,6 +18,7 @@ dependencies = [
   "requests==2.32.5",
   "uvicorn[standard]==0.35.0",
   "yt-dlp==2026.8.19",
+  "zhconv==1.4.3",
 ]
 
 [project.optional-dependencies]
