@@ -44,7 +44,9 @@ class Settings:
     whisper_compute_type: str
     task_poll_interval_seconds: int
     task_max_workers: int
-    max_media_minutes: int = 360
+    #: 内容时长上限（分钟）。本期内 B 站/抖音/小红书统一 120 分钟（2 小时）。
+    #: 超长内容由分窗转写（transcribe_window_seconds）支撑，上限可按需上调。0 = 不限制。
+    max_media_minutes: int = 120
     #: 是否允许上传本地文件。线上（veFaaS）同步调用请求体上限 16 MiB，
     #: 与本地 2 GB 上传冲突，因此线上关闭；本地开发默认开启。
     enable_local_upload: bool = True
@@ -119,7 +121,8 @@ class Settings:
     def max_media_seconds(self) -> float:
         """内容时长上限。``max_media_minutes`` 为 0 表示不限制时长。
 
-        默认 360 分钟（6 小时）：足够覆盖 4–5 小时的播客，同时挡住夸张输入。
+        本期默认 120 分钟（2 小时），三个平台统一；超长内容由分窗转写支撑，
+        上限是配置项，可随时上调（例如 360 = 6 小时）。
         """
         if self.max_media_minutes <= 0:
             return float("inf")
@@ -196,7 +199,7 @@ def get_settings() -> Settings:
         invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
         platform_backend=os.getenv("PLATFORM_BACKEND", "api").strip().lower(),
         warmup_model=_bool("WARMUP_MODEL", False),
-        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "360")),
+        max_media_minutes=int(os.getenv("MAX_MEDIA_MINUTES", "120")),
         max_download_mb=int(os.getenv("MAX_DOWNLOAD_MB", "1024")),
         bilibili_cookie=os.getenv("BILIBILI_COOKIE", "").strip(),
         platform_download_timeout_seconds=int(

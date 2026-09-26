@@ -156,11 +156,17 @@ def test_duration_limit_message_is_readable_in_hours(user_copy_checker):
 
     assert format_limit(360) == "6 小时"
     assert format_limit(180) == "3 小时"
+    assert format_limit(120) == "2 小时"
     assert format_limit(90) == "90 分钟"
 
     message = video_too_long_message(7.5 * 3600, 360)
-    assert message == "该视频时长约 7.5 小时，超过 6 小时上限。请分段处理，或改用本地文件上传"
+    assert message == "该视频时长约 7.5 小时，超过 6 小时上限，暂时无法处理。请换一个时长更短的视频后重试"
     user_copy_checker(message)
+
+    # 本期统一 2 小时上限的提示也必须友好、可行动
+    message_2h = video_too_long_message(3.2 * 3600, 120)
+    assert message_2h == "该视频时长约 3.2 小时，超过 2 小时上限，暂时无法处理。请换一个时长更短的视频后重试"
+    user_copy_checker(message_2h)
 
 
 def test_real_duration_gate_uses_six_hour_limit():
