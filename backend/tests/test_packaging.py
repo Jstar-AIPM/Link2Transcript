@@ -48,6 +48,9 @@ def test_env_and_data_are_excluded_from_deploy_package():
         "·开发文档/上线凭据.md",
         "开发文档/上线凭据.md",
         "·截图和备忘录/screen.png",
+        # 点号个数不固定：真实出现过「··截图反馈/」，旧规则「·截图*/」漏挡
+        "··截图反馈/截屏2026-09-28.png",
+        "截图反馈/a.png",
     ):
         assert _ignored(path), f"{path} 必须被排除，否则会把密钥/数据/依赖打进部署包"
 
