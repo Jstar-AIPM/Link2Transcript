@@ -1,335 +1,238 @@
-# 逐字稿提取器
+# Link2Transcript
 
-把一个本地音视频文件，或一条 B 站 / 小红书视频链接，变成可阅读、可下载的逐字稿（Markdown / TXT）。
+**Turn Bilibili videos and Xiaohongshu posts into readable, downloadable transcripts.**
 
-这是一个从零设计并实现的完整产品：**确定性后端 + 正式前端 + 真实素材验收**。
-从「字幕优先」的路由策略，到长任务的实时反馈、断点续写与取消，
-再到 1 小时长内容的实测数据，都在下面写清楚了。
+[中文](README_ZH.md) · [Live demo](https://ssam70taea5thtgh9v9q5.apigateway-cn-beijing.volceapi.com) · [Product requirements](docs/PRD.md)
 
-```
-后端  Python 3.12 · FastAPI · faster-whisper · FFmpeg · yt-dlp · zhconv · Pydantic v2   252 项测试
-前端  Next.js 16 · React 19 · TypeScript strict · Tailwind CSS v4 · zod                52 项测试
-```
+Link2Transcript is an AI-assisted transcription product built around one promise: a user should be able to submit a supported video link, understand what the system is doing, read partial progress, and leave with a usable transcript.
 
----
+The transcript is not the end product—it becomes a reusable context layer for conversations with AI, deeper analysis, questions, and further thinking.
 
-## 一、它解决什么问题
+It does not force every input through speech recognition. It first looks for trustworthy subtitles, falls back to server-side ASR only when needed, and makes the chosen processing method visible to the user.
 
-把一段音视频变成逐字稿，看起来只是「转写」，实际要处理一长串琐碎问题：
+> Product role: problem definition, scope, workflow design, trade-offs, acceptance criteria, and iteration. Implementation was developed with AI coding assistance against staged product and technical documents.
 
-- 平台视频自带字幕，但用户很难方便地导出；
-- 没有字幕的视频，得先下载、再找工具转写，平台之间的处理方式还不一样；
-- 转写完成后往往还要自己整理成 Markdown / TXT；
-- 长内容要等几十分钟，用户全程不知道进行到哪一步、能不能中断、失败了会不会白等。
+## Why I Built This
 
-所以这个工具要验证的核心命题只有一个：
+Getting text from a video is rarely a single-step task. Users may need to export platform subtitles, download media, extract audio, wait for speech recognition, clean timestamps, and convert the result into a reusable format. Long-running jobs create another problem: users cannot tell whether the system is working, stuck, or safe to close.
 
-> **用户给出内容（文件或链接），能不能一路走到「拿到并下载逐字稿」，并且全程知道发生了什么。**
+The V1 question was therefore not “Can a model transcribe audio?” but:
 
-产品需求文档见 [`docs/PRD.md`](docs/PRD.md)。
+> Can a non-technical user move reliably from a supported video link to a readable, downloadable transcript—with the route, progress, failure state, and limitations made clear?
 
----
+## Product Experience
 
-## 二、几个关键设计取舍
+1. Paste a Bilibili link, a Xiaohongshu link, or the full share text containing that link.
+2. The system validates the source and selects the lowest-cost reliable route.
+3. Progress and transcript segments appear incrementally. The task can be cancelled without discarding text already produced.
+4. A completed transcript can be read, copied, or downloaded as Markdown or TXT.
 
-这一节是这个项目最值得看的部分——**每一个决定都对应一个被放弃的替代方案**。
-
-### 1. 字幕优先，语音转写兜底（并把「处理方式」暴露给用户）
-
-B 站大量视频带 AI 字幕。字幕是现成的文本，直接取比语音识别**快两个数量级**：
-
-| 同一条 15 分钟视频 | 耗时 |
+| Input | Current behavior |
 | --- | --- |
-| 走字幕提取 | **1.27 秒** |
-| 走语音转写 | 4–5 分钟 |
+| Bilibili single video / selected episode | Validate → prefer trusted subtitles → ASR fallback |
+| Xiaohongshu video note | Resolve share link → download media → extract audio → transcribe |
+| Douyin, playlists, multi-output collections | Explicitly out of scope for the current release |
 
-所以路由规则是「有可用字幕就不调用语音识别」，人工字幕优先于 AI 字幕。
-同时，界面上明确显示本条任务是「字幕提取（AI 字幕）」还是「语音转写」——
-用户有权知道自己拿到的东西是怎么来的。
+The hosted product accepts link input only. A local-upload path remains implemented and tested for local/self-hosted deployments, but it is disabled in the current live demo because the deployment gateway limits synchronous request bodies.
 
-**取舍**：字幕获取失败**不等于任务失败**，自动降级到语音转写。
-否则一次接口抖动就会让本来能成功的任务失败。
+## Workflow Design
 
-### 2. 只下载音频轨，不下载视频
-
-转写只需要音频，而视频体积可能是音频的十几倍。
-链接任务一律只取音频流（`bestaudio`），于是「3 小时内容几十 GB」的顾虑从根上消失：
-
+```mermaid
+flowchart TD
+    A[User submits a video link] --> B{Supported platform?}
+    B -->|Bilibili| E[Resolve URL and inspect metadata]
+    B -->|Xiaohongshu| F[Resolve share link and inspect media]
+    E --> G{Trustworthy subtitle available?}
+    G -->|Yes| H[Parse and normalize subtitle]
+    G -->|No| I[Download audio and run ASR]
+    F --> J[Download media and extract audio]
+    I --> K[faster-whisper]
+    J --> K
+    K --> L[Append timestamped segments]
+    H --> M[Export result]
+    L --> M
+    M --> N[Read, copy, Markdown, TXT]
 ```
-3 小时内容 → 音频约 100–250 MB（而不是几十 GB）
+
+This is a deterministic workflow with explicit branches and failure rules—not an autonomous Agent loop.
+
+## Product Decisions and Trade-offs
+
+### 1. Subtitle first; speech recognition as fallback
+
+Bilibili often already has human or platform-generated subtitles. Reusing them avoids unnecessary compute and waiting. In recorded acceptance testing, a 15-minute video completed via subtitle extraction in **1.27 seconds**, while ASR took several minutes.
+
+The product still exposes the actual route—human subtitle, AI subtitle, or speech recognition—because users should know how the transcript was produced.
+
+Subtitle availability alone is not enough. Real testing found that a platform endpoint could return subtitles for the wrong video. The Bilibili adapter therefore checks duration coverage and segment uniqueness before trusting a subtitle; suspicious results fall back to ASR.
+
+### 2. Cost is gated by duration, not only file size
+
+Transcription cost grows mainly with media duration. The system inspects metadata before downloading when possible and applies a configurable duration limit (two hours by default). File size remains a safety limit, not the primary product rule.
+
+### 3. Long jobs show progress and preserve work
+
+ASR segments are appended to JSONL as soon as they are produced. The UI fetches only new segments with a cursor, so a page refresh or process interruption does not erase completed work.
+
+For content longer than 20 minutes, the backend uses fixed windows with a five-second overlap and timestamp-based deduplication. This bounds memory use while avoiding a fragile dependency on silence detection—an approach that failed on videos with continuous background music.
+
+### 4. Partial text is readable, but not downloadable as a “complete” artifact
+
+Failed and cancelled tasks retain generated segments for inspection. They do not receive Markdown/TXT/result artifacts. This prevents an incomplete transcript from being mistaken for a finished deliverable.
+
+### 5. User-facing failures must suggest the next action
+
+Platform restrictions, missing audio, silent content, oversized inputs, invalid links, and incomplete downloads have explicit Chinese messages. Internal stack traces, credentials, and raw dependency errors stay out of the UI.
+
+## AI and Technical Design
+
+### What is actually AI-powered
+
+The runtime AI capability is **automatic speech recognition through `faster-whisper`** (`small`, CPU, `int8` by default). The core product does not call GPT, Claude, DeepSeek, or another LLM; it has no RAG pipeline, autonomous planning, memory system, or sub-agent orchestration.
+
+`skill/SKILL.md` documents the intended routing and fallback policy for development and reuse. It is not loaded by the application at runtime—the executable behavior lives in the FastAPI service layer.
+
+Text post-processing is deliberately narrow and deterministic: Traditional Chinese is converted to Simplified Chinese and a small set of verified recurring errors is normalized. The system does not perform LLM rewriting that could silently change meaning.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    U[Browser] -->|same-origin requests| FE[Next.js 16 / React 19]
+    FE -->|JSON proxy| API[FastAPI]
+    FE -->|streaming upload proxy| API
+    API --> P[Platform adapters]
+    P --> BI[Bilibili API + WBI signing]
+    P --> XH[Xiaohongshu via yt-dlp]
+    API --> FF[FFmpeg media pipeline]
+    API --> ASR[faster-whisper]
+    API --> FS[JSON task records + JSONL segments]
+    FS --> TOS[Optional TOS backup and recovery]
+    API --> OUT[Markdown / TXT / JSON artifacts]
 ```
 
-这不靠限制用户来规避，而是靠**压根不下载不需要的东西**。
-
-### 3. 用「时长」做成本闸门，而不是用「体积」
-
-体积不是成本指标：同样 500 MB，可能是 3 小时的语音播客，也可能是 4K 视频，
-但转写耗时只跟**时长**有关。所以：
-
-- **主闸门 = 内容时长**（本期上限 2 小时，配置项可调）：在**下载之前**用元信息判断，超限直接拒绝，不浪费流量；
-- **体积只做兜底**（防异常输入）；
-- **本地上传放宽到 2 GB**：因为 WAV 是无压缩格式，3 小时 44.1kHz 立体声 WAV 就有约 1.9 GB，
-  用体积卡它会把合法场景挡在门外。
-
-### 4. 长任务：过程可见 + 中断可续 + 可取消
-
-「等 30 分钟然后一次性看到结果」是不可接受的体验。V1 为此做了四件事：
-
-| 能力 | 做法 | 实测 |
+| Layer | Implementation | Why |
 | --- | --- | --- |
-| 逐段实时呈现 | 每个片段产出即追加落盘，接口按游标增量拉取 | 1 小时内容：片段边转边出，进度百分比持续前进 |
-| 首字延迟有交代 | 模型加载/音频分析期间没有文字可流，给独立文案「正在加载语音识别模型」 | 高负载下首字延迟可达 36 秒，文案确实必要 |
-| 中断可续 | 断点 = 已落盘片段的最后结束时间；重启后自动从断点续写 | 真实 `kill -9`：60 段处中断 → 重启续写 → 217 段完成，重叠区无重复 |
-| 可控 | 取消立即生效；工作线程在下一个片段边界停止 | 取消响应 **0.01 秒**，内容不再增长，已生成内容保留 |
+| Frontend | Next.js 16, React 19, strict TypeScript, Tailwind CSS v4, zod | Typed UI, runtime API validation, same-origin deployment |
+| API and orchestration | Python 3.11/3.12, FastAPI, Pydantic v2 | Strong request/state contracts and access to the media/ASR ecosystem |
+| Platform handling | Bilibili API with WBI signing; yt-dlp for Xiaohongshu and fallback paths | Avoids Bilibili HTML 412 failures in data centers while isolating platform-specific behavior |
+| Media | FFmpeg via `imageio-ffmpeg` | Normalizes inputs to 16 kHz mono audio and supports window slicing |
+| ASR | faster-whisper | Local inference without an external model API |
+| Persistence | Atomic JSON task records, append-only JSONL segments, optional Volcengine TOS | Simple local authority with cloud recovery, without adding a database before it is needed |
+| Deployment | Volcengine veFaaS, API Gateway, TOS | Separate frontend/backend functions with recoverable task data |
 
-**取舍**：**不做「按静音切分」**。实测发现 B 站内容普遍铺了背景音乐，
-静音检测在 419 秒素材上扫遍 -30～-55 dB 都找不到切点 —— 硬切会切断词句。
-但长内容又必须控内存（6 小时整段解码约 1.4 GB，小规格实例会 OOM），
-因此改为**固定时间窗分窗转写**：默认 20 分钟一窗、窗口间重叠 5 秒、按时间戳去重，
-内存与总时长解耦，中断最多只丢一个窗口；短内容（≤ 一窗）仍走原来的整段路径，行为不变。
+## State, Recovery, and Boundaries
 
-### 5. 失败和取消都保留内容，但不产出「半成品文件」
+Tasks move through an explicit state machine:
 
-- 已生成的片段保留在磁盘上、可继续查看（不会因为一次失败就丢掉几十分钟的成果）；
-- 但**不生成** Markdown / TXT / 结构化结果文件 —— 只有成功的任务才有可下载产物。
+```text
+pending → checking_subtitle → [downloading_audio → transcribing] → exporting → succeeded
 
-原因：产物一旦生成，它就会被当作「完整逐字稿」被复制、转发、喂给别的工具。
-半成品的错误成本，高于「暂时不能下载」的不便。
-
-### 6. 文案是产品的一部分
-
-两条硬规则，写进了验收标准：
-
-1. **所有用户可见文案纯中文**，不出现错误码、英文状态名、程序堆栈、技术术语；
-2. **每条错误都告诉用户下一步怎么办**。
-
-例如「没有人声」这类情况，不是简单报错，而是按来源换说法：
-
-> 未在文件中检测到人声。请确认文件是否正确，或更换包含人声的文件后重试。
-> （链接来源则说「未在该视频中检测到人声」）
-
-判定基于语音活动检测，**在解码前完成**，所以失败很快（1–3 秒），不用等半小时才被告知。
-
-### 7. 明确不做的东西
-
-| 不做 | 原因 |
-| --- | --- |
-| 画面烧录字幕（硬字幕）OCR | 与「字幕提取」不是同一能力，是独立链路 |
-| 多 P / 合集 / 播放列表 | 会改变任务与产物结构，需求待验证 |
-| 说话人识别 / 翻译 / LLM 清洗 | 属于「逐字稿之后的加工」，会稀释核心闭环的验证 |
-| 账号体系 / 历史任务中心 | 线上用邀请码做准入，不做完整账号体系与多设备同步 |
-| 抖音 | 其接口依赖页面 JS 生成的签名 Cookie，纯 HTTP 取不到数据（实测见下），需无头浏览器/签名移植等独立技术栈；本期不做 |
-
-判断标准只有一条：**它是否影响「内容 → 逐字稿 → 导出」这条闭环的成立。**
-
----
-
-## 三、真实验收（不是纸面设计）
-
-所有数字都来自真实素材（真实音频、真实视频、真实 B 站链接、真实服务强杀），不使用 mock：
-
-| 场景 | 结果 |
-| --- | --- |
-| 1.05 小时本地音频（2007 段） | 全部完成，进度 100%，**落盘段数 = 接口段数 = 产物段数**（三方一致） |
-| **峰值内存（1 小时内容）** | **1069 MB**（模型 ~500 MB + 解码数组 ~240 MB + 开销），与设计预估一致 |
-| 有字幕的 B 站链接（15 分钟） | **1.27 秒**完成，377 段，无需下载音频、不调用语音识别 |
-| 转写中断（`kill -9` 服务） | 重启后自动续写，从 145 秒断点继续，217 段完成，**重叠区无重复** |
-| 取消任务 | 0.01 秒生效，已生成 10 段保留，`/result` 与下载接口返回 409 |
-| 没有人声的音频（12 秒静音） | 明确失败并给中文原因，**0 段、无产物** |
-| 大会员专享视频 | 明确拒绝，**不用预览片段冒充完整逐字稿** |
-
-**为什么坚持用真实素材验收**：开发过程中出现过一个只有真实规模才能暴露的缺陷——
-前端反向代理默认只放行 **10 MB** 请求体，而上传上限是 2 GB。
-用一个 5.9 MB 的文件测试时它是通过的，换成 13 MB 就 500。
-这类问题在单元测试里永远看不见。
-
----
-
-## 四、技术实现
-
-### 4.1 架构
-
-```
-浏览器 ──同源──> Next.js (3100) ──反向代理──> FastAPI (8000)
-                    │                            │
-                    │  上传走流式转发（不缓冲）      ├─ 平台解析  yt-dlp
-                    │                            ├─ 音频处理  FFmpeg
-                    │                            ├─ 字幕/转写 字幕接口 / faster-whisper
-                    └────────── 轮询增量拉取 ──────┴─ 落盘     任务记录 JSON + 片段 JSONL
+Any non-terminal state may become failed or cancelled.
 ```
 
-### 4.2 技术选型与理由
+- Each segment is flushed to disk immediately; aggregate task progress is persisted on a short interval to avoid write amplification.
+- The recovery checkpoint is the maximum end timestamp in persisted segments, avoiding a second competing checkpoint file.
+- Resume starts slightly before the checkpoint and discards overlap by timestamp.
+- The backend cross-checks downloaded audio duration against platform metadata to reject silent truncation or preview-only media.
+- Short-link redirects are allowlisted again after resolution to reduce open-redirect/SSRF risk.
+- A single worker is intentional for the current deployment; simultaneous tasks queue and the UI exposes queue position.
 
-**后端**
+## Validation and Iteration
 
-| 选型 | 理由 |
+The project was developed in stages: PRD → technical fit → local core loop → platform route → progressive feedback/recovery → production UI → platform expansion → cloud deployment.
+
+Automated verification on the current codebase:
+
+```text
+Backend: 255 pytest cases passed
+Frontend: typecheck + lint + 52 Vitest cases + production build passed
+```
+
+Selected real-material acceptance evidence:
+
+| Scenario | Observed result |
 | --- | --- |
-| Python + FastAPI | 音频处理与语音识别生态在这一侧；异步接口 + 自动生成 OpenAPI 文档 |
-| faster-whisper（`small` / `int8` / CPU） | 本地推理、不依赖任何外部 API；CPU 上即可达到 2–4 倍实时；模型按需加载 |
-| FFmpeg（经 `imageio-ffmpeg` 自带二进制） | 统一把音视频转成 16 kHz 单声道 WAV，后续链路只处理一种格式 |
-| yt-dlp | 平台解析与音频下载；支持只取音频流 |
-| Pydantic v2 | 请求/响应与任务记录的统一模型，schema 版本化（v1 → v3 兼容读取） |
-| 原生 JSON 文件 + append-only JSONL | 单用户、无并发查询需求，引入数据库只会增加部署与迁移成本；线上用对象存储（TOS）做持久化与恢复 |
-| pytest | 254 项测试：状态机、错误路径、schema 兼容、上传与平台链路、分窗转写、文本规范化（全部离线可跑） |
+| Retained local/self-hosted upload path—not enabled in the live demo | 61.1 s video → 37 segments → Markdown/TXT, completed in 19.5 s on the local test environment |
+| Long-content validation of the retained local path | 1.05-hour audio → 2,007 segments; persisted, API, and exported counts matched |
+| Bilibili with usable subtitles | 15-minute video completed in 1.27 s without ASR |
+| Forced process termination during ASR | Restart resumed from persisted segments; overlap produced no duplicate segments in the recorded acceptance case |
+| Xiaohongshu | 150.9 s → 54 segments; a 1,365 s sample → 480 segments in about 13 minutes in recorded cloud acceptance |
+| Silent audio / video without audio | Explicit failure, zero downloadable artifacts |
 
-**前端**
+The distinction matters: automated tests protect contracts and regressions; real media reveals integration failures such as platform anti-bot behavior, wrong subtitle payloads, memory pressure, upload proxy limits, and credential expiry.
 
-| 选型 | 理由 |
-| --- | --- |
-| Next.js 16（App Router）+ React 19 | 路由、服务端外壳、同源反向代理一处配置；避免为工具类产品自建构建体系 |
-| TypeScript strict | 任务状态、产物、错误类型都有明确类型；不用 `any` 绕过检查 |
-| Tailwind CSS v4 + 语义化设计变量 | 颜色/圆角/间距集中在设计变量里，页面只写语义类名，避免视觉漂移 |
-| **zod** | TypeScript 只管开发期，接口返回是不可信数据；所有响应过运行时校验，字段改名立刻失败 |
-| XMLHttpRequest（而非 fetch）上传 | 需要**真实上传进度**与**可取消上传**，`fetch` 拿不到上传进度 |
-| 轮询增量拉取（不引入 SSE） | 实测单次请求延迟中位 3 ms；片段本身成串产出；轮询与「落盘 + 刷新重放」天然一致 |
+## Current Limits
 
-### 4.3 几个值得说明的工程决策
+- Supported platforms: Bilibili and Xiaohongshu. Douyin is not supported.
+- The hosted demo accepts links only. Local upload is implemented for local/self-hosted use but is not available in the current online product.
+- Bilibili subtitle extraction depends on a valid server-side session. When it expires, the workflow automatically falls back to ASR, so the task can still continue, but processing takes significantly longer.
+- Single-item workflow only; playlists and multi-output collections are not modeled.
+- Burned-in subtitles require OCR and are not extracted.
+- No speaker diarization, translation, summarization, or semantic transcript rewriting.
+- Default maximum duration is two hours and can be configured.
+- Xiaohongshu media extraction may require its own valid platform cookie on cloud/data-center networks. This dependency is separate from the Bilibili subtitle session, and platform changes can break extraction.
+- The first ASR request may be slower while the model is downloaded or warmed.
+- Single-worker scheduling is suitable for the current portfolio/demo scale, not high-concurrency production traffic.
 
-**① 状态机 + 允许转移表**
-任务状态不是「随手改字段」，而是有明确允许转移的集合，非法转移直接拒绝。
-好处是：任务不可能悄悄跳到矛盾状态；取消、失败、续跑这些分支都落在同一张表里可审。
+## Roadmap
 
-**② 片段用 append-only JSONL，进度按秒节流写回**
-长内容有数千个片段。如果每次产出都整体重写任务记录，会变成 O(n²) 写放大。
-所以：**片段逐条追加落盘**（O(1)、每行 flush，进程被强杀也不丢），
-**任务记录按秒节流写回**。代价是记录里的进度会短暂落后 —— 但**磁盘才是权威数据源**，
-断点、恢复、界面渲染都以磁盘为准。
+- Validate mobile layout on more physical devices.
+- Add clearer quality signals and optional manual transcript correction.
+- Improve service-level rate limiting and multi-worker scheduling only when usage justifies the complexity.
+- Evaluate OCR, speaker diarization, and downstream summarization as separate capabilities rather than silently expanding the core transcript contract.
+- Continue turning production incidents into repeatable acceptance cases and regression tests.
 
-**③ 以磁盘为权威断点**
-检查点不额外维护文件，就是「已落盘片段的最大结束时间」。
-避免两个数据源不一致；恢复时从「检查点 − 2 秒」处截取音频重跑，重叠区按时间戳去重。
+## Run Locally
 
-**④ 上传走流式转发，而不是普通反向代理**
-Next 的代理层默认把请求体读进内存并限制 10 MB，与 2 GB 上传上限冲突。
-因此上传单独由 Route Handler 用 `request.body` 流式转发（`duplex: "half"`），不缓冲、不占内存。
+Requirements: Python 3.11+, Node.js 20+, and network access for platform URLs. FFmpeg is provided through `imageio-ffmpeg`.
 
----
-
-## 五、快速开始
-
-### 环境要求
-
-Python 3.11+、Node 20+、可联网（链接链路）。FFmpeg 由 `imageio-ffmpeg` 自带，无需单独安装。
-
-### 后端
+### Backend
 
 ```bash
-python -m venv .venv && .venv/bin/pip install -e .
+python -m venv .venv
+.venv/bin/pip install -e .
 cp .env.example .env
-.venv/bin/uvicorn backend.app.main:app --port 8000      # 打开 http://127.0.0.1:8000/docs
+.venv/bin/uvicorn backend.app.main:app --port 8000
 ```
 
-### 前端
+API docs: `http://127.0.0.1:8000/docs`
+
+### Frontend
 
 ```bash
 cd frontend
 npm install
 cp .env.example .env.local
-npm run build && npm start                              # 打开 http://127.0.0.1:3100
+npm run build
+npm start
 ```
 
-### 测试
+Product UI: `http://127.0.0.1:3100`
+
+### Verification
 
 ```bash
-.venv/bin/pytest                    # 后端 252 项（全部离线）
-cd frontend && npm run verify       # 类型 + lint + 52 项测试 + 构建
+.venv/bin/pytest
+cd frontend && npm run verify
 ```
 
-> B 站字幕接口需要登录态。若不配置凭据，字幕路径会自动降级为语音转写，功能不受影响，只是更慢。
-> 凭据只从服务端环境变量读取，不进入前端、日志与版本控制。
+Platform cookies and cloud credentials are optional server-side environment variables. Never place them in frontend code, logs, or version control.
 
----
+## Repository Guide
 
-### 线上运行（火山引擎 veFaaS）
-
-线上是同一套代码的**两个函数**（Next 前端 + FastAPI 后端）加对象存储（TOS）：
-
-- **邀请制**：管理员码永久不限次；普通码 30 天 / 20 次（一码可共用），任务按邀请码隔离；
-  另有**每码每日任务额度**（`MAX_TASKS_PER_CODE_PER_DAY`，默认 30，管理员不受限），用于防滥用；
-- **数据不丢**：任务记录与逐字稿产物写穿对象存储，实例被替换后自动恢复；
-- **打包纪律**：密钥只走环境变量；内部文档、运行数据、`.env` 一律排除在部署包与仓库之外；
-- 后端依赖从根目录 `requirements.txt` 安装；前端用 `next build` 的 standalone 产物部署，
-  **构建期必须注入 `BACKEND_ORIGIN`**（同源反向代理目标在构建期固化）。
-
-> 平台凭据（B 站 / 小红书 Cookie）只放在服务端环境变量，不进入前端、日志与版本控制。
-
----
-
-## 六、接口一览
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/api/v1/tasks` | 上传文件并创建任务 |
-| `POST` | `/api/v1/tasks/from-url` | 提交 B 站链接并创建任务 |
-| `GET` | `/api/v1/tasks/{id}` | 查询状态（含阶段文案、进度百分比、已生成段数） |
-| `GET` | `/api/v1/tasks/{id}/segments?after=N` | **增量**拉取转写片段（长内容不重复传输） |
-| `POST` | `/api/v1/tasks/{id}/cancel` | 取消任务（保留已生成内容，不产生下载产物） |
-| `GET` | `/api/v1/tasks/{id}/result` | 结构化逐字稿（仅成功后可用） |
-| `GET` | `/api/v1/tasks/{id}/download/markdown` `.../txt` | 下载产物 |
-
-错误统一为 `{"error": {"code", "message"}}`，`message` 一律是可直接展示的中文。
-
----
-
-## 七、项目结构
-
-```
-backend/
-  app/
-    api/          接口层（创建任务、状态、增量片段、取消、下载）
-    core/         配置、错误、文案、文件名安全处理
-    schemas/      任务与产物模型（含 schema 版本）
-    services/     编排、平台解析、下载、音频、字幕、转写、片段存储、导出
-  tests/          252 项离线测试
-frontend/
-  src/
-    app/          路由（首页 / 任务页 / 上传流式转发）
-    components/   展示与交互组件（含 ui 原语与布局）
-    features/     业务逻辑（提交任务、增量轮询、任务详情）
-    lib/          接口客户端、zod 校验、格式化
-    styles/       设计变量（颜色的唯一来源）
-  tests/          52 项组件与接口契约测试
-docs/PRD.md       产品需求文档
-skill/SKILL.md    任务处理路由与降级策略说明
+```text
+backend/app/api/        Task creation, status, segments, cancellation, downloads
+backend/app/services/   Workflow, platforms, media, ASR, persistence, export
+backend/tests/          255 backend tests
+frontend/src/           Product UI, API client, polling, runtime validation
+frontend/tests/         52 frontend tests
+docs/PRD.md             Public product definition and acceptance criteria
+skill/SKILL.md          Human-readable routing/fallback specification; not runtime-loaded
 ```
 
----
+## Responsible Use
 
-## 八、已知限制
+This is a personal portfolio and technical research project. Use it only for content you are permitted to process, follow platform terms and copyright rules, and do not use it for bulk scraping. Platform extraction depends on third-party behavior and may require maintenance.
 
-- **平台范围**：支持 B 站与小红书；抖音依赖页面 JS 生成的签名 Cookie，尚未接入；
-- **单条时长上限 2 小时**（配置项，可上调）：超长内容会先按 20 分钟分窗，因此上限不是内存瓶颈；
-- **小红书在机房 IP 需要登录 Cookie**：云上访问会被平台判定为登录墙，须配置 `XIAOHONGSHU_COOKIE`（建议用小号）；
-- **硬字幕（画面烧录）不支持** —— 需要 OCR，属独立能力；
-- **大会员专享视频不支持** —— 只能拿到预览片段，会被明确拒绝而不是输出错误结果；
-- **说话人识别 / 翻译 / LLM 清洗不在范围内**；
-- **单进程单 worker**：多人同时提交会排队（界面会显示“前面还有 N 个任务”），但尚未做多实例调度；
-- **防滥用**：已有每码每日任务额度；更完整的限流（按 IP / 全局额度）待后续。
-- **转写质量**：已做「繁体 → 简体 + 常见同音错字」规范化，更细的语义纠错不做；
-- **中间文件线上保留 7 天**（`RETENTION_DAYS`），到期自动清理。
-
----
-
-## 九、关于开发方式
-
-这个项目采用**文档先行 + 验收驱动**的方式推进：
-
-1. 每个阶段先写清范围、明确「不做什么」和验收标准，再动手；
-2. 实现由 AI 编码代理执行，我负责需求定义、方案取舍与验收判定；
-3. 每个阶段都必须通过**真实素材验收**（真实音视频、真实链接、真实中断与取消），
-   而不只是单元测试通过；
-4. 真实验收暴露的问题会回写进验收记录，并转成自动化测试防止复发。
-
-这套流程本身就是这个项目想验证的事情之一：**AI 能写代码之后，
-产品经理的价值更多落在「定义正确的问题、做出取舍、并有能力验收」上。**
-
----
-
-## 十、说明与免责
-
-- 本项目是**个人作品与技术研究**，代码与部署方式仅供参考；
-- 内容来自第三方平台，请遵守各平台的**服务条款与版权规定**，仅用于个人学习与资料整理，
-  不要用于批量抓取或商业用途；
-- 平台的解析方式可能随平台调整而失效（尤其依赖登录态的平台），这属于已知的工程现实；
-- 请不要把任何平台凭据（Cookie）、管理员码或密钥提交到公开仓库；本仓库已通过
-  `.gitignore` 与打包规则排除这些内容。
+MIT License.
