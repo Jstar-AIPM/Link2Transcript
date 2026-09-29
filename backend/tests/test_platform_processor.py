@@ -130,6 +130,8 @@ def test_subtitle_path_succeeds_without_calling_whisper(settings):
     assert record.subtitle_kind == SubtitleKind.CC
     assert record.processing_method == ProcessingMethod.SUBTITLE_BILIBILI_CC
     assert transcription.calls == [], "有字幕时不应调用语音识别"
+    # 字幕路径也要把段数写回任务记录，否则界面上会显示成「0 段」
+    assert record.segment_count == 2
     markdown = Path(record.artifacts.markdown).read_text(encoding="utf-8")
     assert "字幕提取（人工字幕）" in markdown
     assert "原始地址：https://www.bilibili.com/video/BV1BqhB6nEdN" in markdown

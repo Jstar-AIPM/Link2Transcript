@@ -623,6 +623,14 @@ class TaskProcessor:
         if self.task_service.is_cancelled(task_id):
             raise AppError("TASK_CANCELLED", "任务已取消")
         self.task_service.transition(task_id, TaskStatus.EXPORTING)
+        # 字幕路径不经过转写，进度里从来没有段数（界面会显示成「0 段」）。
+        # 这里以最终产物为准补上，让两条链路的“段数”语义一致。
+        if result.segments:
+            self.task_service.set_progress(
+                task_id,
+                segment_count=len(result.segments),
+                transcribed_seconds=max(segment.end for segment in result.segments),
+            )
         markdown_path, txt_path, result_path = self.export_service.export(result)
         artifacts = TaskArtifacts(
             markdown=str(markdown_path),

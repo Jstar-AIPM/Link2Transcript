@@ -7,7 +7,8 @@
 
 ```text
 /x/web-interface/view     视频信息（标题、时长、分 P）
-/x/player/v2              字幕轨（人工字幕 / AI 字幕，含字幕 URL）
+/x/player/wbi/v2         字幕轨（人工字幕 / AI 字幕，含字幕 URL；需 WBI 签名）
+/x/player/v2             同上（旧接口；仅当 WBI 接口调用失败时兜底）
 /x/player/playurl         DASH 音频流地址（需 WBI 签名）
 ```
 
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://api.bilibili.com"
 VIEW_URL = f"{API_BASE}/x/web-interface/view"
 PLAYER_URL = f"{API_BASE}/x/player/v2"
+PLAYER_WBI_URL = f"{API_BASE}/x/player/wbi/v2"
 PLAYURL_URL = f"{API_BASE}/x/player/playurl"
 NAV_URL = f"{API_BASE}/x/web-interface/nav"
 
@@ -69,6 +71,12 @@ WBI_KEY_TTL_SECONDS = 1800
 #         134 条 / 覆盖 225s、94 条 / 覆盖 182s（明显偏短，内容是别的视频）
 #         55 条 / 覆盖 275s（视频只有 123s）
 # 因此只接受「覆盖率贴近视频时长 + 文本基本不重复」的结果，否则降级为语音转写。
+#
+# 2026-09-28 补充（真实线上故障）：上面的"随机残缺"主要是**旧接口**造成的。
+# 同一视频、同一凭据、各请求 5 次实测：
+#   x/player/v2      只有 1~2 次返回完整字幕（覆盖率 1.00），其余为 0.01~0.25
+#   x/player/wbi/v2  5/5 次全部完整
+# 所以字幕轨改走 WBI 签名接口（见 ``_player_subtitle_tracks``），旧接口只作兜底。
 SUBTITLE_MIN_COVERAGE_RATIO = 0.9
 SUBTITLE_MAX_COVERAGE_RATIO = 1.1
 SUBTITLE_MIN_UNIQUE_RATIO = 0.6
@@ -230,11 +238,7 @@ class BilibiliApiService:
           让编排层降级为语音转写（宁可慢，也不要半截逐字稿）；
         - 任何一条字幕取不到就跳过它，不影响其它字幕轨。
         """
-        try:
-            player = self._get_json(PLAYER_URL, {"aid": aid, "cid": cid})
-        except AppError:
-            return {}
-        tracks = ((player.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        tracks = self._player_subtitle_tracks(aid, cid)
         subtitles: dict[str, list[dict]] = {}
         for track in tracks:
             language = str(track.get("lan") or "").strip()
@@ -247,6 +251,26 @@ class BilibiliApiService:
             if payload:
                 subtitles.setdefault(language, []).append({"ext": "json", "data": payload})
         return subtitles
+
+    def _player_subtitle_tracks(self, aid: int, cid: int) -> list[dict]:
+        """取字幕轨列表。
+
+        优先 **WBI 签名接口**：实测（同一视频、同一凭据、各请求 5 次）旧接口
+        ``x/player/v2`` 只有 1~2 次返回完整字幕，其余只返回开头一小段；
+        换成 ``x/player/wbi/v2`` 后 5/5 全完整。旧接口保留为"WBI 调用失败"时的兜底。
+
+        接口通但确实没有字幕轨时直接返回空表（以 WBI 的结果为准），不再多打一次旧接口。
+        """
+        for url, params in (
+            (PLAYER_WBI_URL, self._sign({"aid": aid, "cid": cid})),
+            (PLAYER_URL, {"aid": aid, "cid": cid}),
+        ):
+            try:
+                player = self._get_json(url, params)
+            except AppError:
+                continue
+            return ((player.get("data") or {}).get("subtitle") or {}).get("subtitles") or []
+        return []
 
     def _fetch_longest_subtitle(self, subtitle_url: str, *, duration: float | None) -> str:
         """取一份**通过校验**的字幕；多次尝试都拿不到就返回空字符串（触发降级转写）。

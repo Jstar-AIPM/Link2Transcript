@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,9 @@ class FakeSession:
 def make_service(responses: dict, **kwargs) -> BilibiliApiService:
     service = BilibiliApiService(max_media_seconds=3600, max_media_minutes=60, **kwargs)
     service.session = FakeSession(responses)
+    # WBI 密钥直接注入，避免测试里为了签名去打 nav 接口
+    service._wbi_keys = ("0" * 32, "1" * 32)
+    service._wbi_keys_at = time.monotonic()
     return service
 
 
@@ -82,7 +86,7 @@ def test_probe_maps_ai_subtitle_and_manual_correctly():
     service = make_service(
         {
             "web-interface/view": VIEW,
-            "player/v2": player_with("ai-zh"),
+            "player/wbi/v2": player_with("ai-zh"),
             "subtitle_body": subtitle_payload(590.0),
         }
     )
@@ -99,7 +103,7 @@ def test_incomplete_subtitle_is_refused_so_callers_fall_back():
     service = make_service(
         {
             "web-interface/view": VIEW,
-            "player/v2": player_with("ai-zh"),
+            "player/wbi/v2": player_with("ai-zh"),
             "subtitle_body": subtitle_payload(150.0),  # 覆盖 25%
         }
     )
@@ -112,7 +116,7 @@ def test_incomplete_then_complete_subtitle_is_accepted():
     service = make_service(
         {
             "web-interface/view": VIEW,
-            "player/v2": player_with("zh-CN"),
+            "player/wbi/v2": player_with("zh-CN"),
             "subtitle_body": subtitle_payload(590.0),
         }
     )
@@ -136,14 +140,14 @@ def test_incomplete_then_complete_subtitle_is_accepted():
 def test_multi_part_link_without_page_is_rejected():
     view = json.loads(json.dumps(VIEW))
     view["data"]["pages"] = [{"cid": 1, "duration": 10}, {"cid": 2, "duration": 10}]
-    service = make_service({"web-interface/view": view, "player/v2": player_with("ai-zh")})
+    service = make_service({"web-interface/view": view, "player/wbi/v2": player_with("ai-zh")})
     with pytest.raises(AppError) as exc_info:
         service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
     assert exc_info.value.code == "MULTI_PART_NOT_SUPPORTED"
 
 
 def test_single_page_with_out_of_range_p_param_is_rejected():
-    service = make_service({"web-interface/view": VIEW, "player/v2": player_with("ai-zh")})
+    service = make_service({"web-interface/view": VIEW, "player/wbi/v2": player_with("ai-zh")})
     with pytest.raises(AppError) as exc_info:
         service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR?p=99")
     assert exc_info.value.code == "INVALID_SOURCE_URL"
@@ -151,7 +155,7 @@ def test_single_page_with_out_of_range_p_param_is_rejected():
 
 def test_duration_gate_runs_before_download():
     service = BilibiliApiService(max_media_seconds=300, max_media_minutes=5)
-    service.session = FakeSession({"web-interface/view": VIEW, "player/v2": player_with("ai-zh")})
+    service.session = FakeSession({"web-interface/view": VIEW, "player/wbi/v2": player_with("ai-zh")})
     with pytest.raises(AppError) as exc_info:
         service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
     assert exc_info.value.code == "VIDEO_TOO_LONG"
@@ -175,7 +179,7 @@ def test_audio_download_falls_back_to_backup_url():
         },
     }
     service = make_service(
-        {"web-interface/view": VIEW, "player/v2": player_with("ai-zh"), "playurl": playurl}
+        {"web-interface/view": VIEW, "player/wbi/v2": player_with("ai-zh"), "playurl": playurl}
     )
     service._wbi_keys = ("a" * 32, "b" * 32)
 
@@ -263,6 +267,49 @@ def test_app_wires_api_backend_into_processor(settings):
         app.state.processor.submit = lambda task_id: None
         with TestClient(app):
             pass
+
+
+def test_subtitle_tracks_prefer_wbi_endpoint():
+    """字幕轨必须走 WBI 签名接口。
+
+    实测（2026-09-28）：旧接口 ``/x/player/v2`` 对同一视频会随机只返回开头一小段，
+    导致覆盖率校验失败并降级为语音转写（线上真实故障）；WBI 接口 5/5 完整。
+    """
+    service = make_service(
+        {
+            "web-interface/view": VIEW,
+            "player/wbi/v2": player_with("ai-zh"),
+            "subtitle_body": subtitle_payload(590.0),
+        }
+    )
+    meta = service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
+    assert list(meta.subtitles) == ["ai-zh"]
+    assert any("player/wbi/v2" in url for url in service.session.calls)
+    # 拿到字幕就不该再去打旧接口
+    assert not any(url.endswith("/x/player/v2") for url in service.session.calls)
+
+
+def test_subtitle_tracks_fall_back_to_legacy_endpoint():
+    """WBI 接口调用失败（例如签名密钥取不到）时，仍要能退回旧接口，不能整条链路失败。"""
+    service = make_service(
+        {
+            "web-interface/view": VIEW,
+            "player/v2": player_with("ai-zh"),
+            "subtitle_body": subtitle_payload(590.0),
+        }
+    )
+    meta = service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
+    assert list(meta.subtitles) == ["ai-zh"]
+
+
+def test_video_without_subtitles_does_not_hit_legacy_endpoint():
+    """WBI 接口明确返回"没有字幕轨"时，以它为准，不再多打一次旧接口。"""
+    service = make_service(
+        {"web-interface/view": VIEW, "player/wbi/v2": {"code": 0, "data": {}}}
+    )
+    meta = service.probe("https://www.bilibili.com/video/BV1VVhk6pEiR")
+    assert meta.subtitles == {}
+    assert not any(url.endswith("/x/player/v2") for url in service.session.calls)
 
 
 def test_subtitle_covering_more_than_video_is_rejected():
