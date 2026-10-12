@@ -57,7 +57,7 @@ def test_normal_code_allows_exactly_max_uses(tmp_path: Path):
     with pytest.raises(AppError) as exc_info:
         service.login(code)
     assert exc_info.value.code == "INVITE_CODE_EXHAUSTED"
-    assert "已用完" in exc_info.value.message
+    assert "体验次数已经用完" in exc_info.value.message
 
 
 def test_normal_code_defaults_to_30_days_and_20_uses(tmp_path: Path):
@@ -79,7 +79,7 @@ def test_expired_code_is_rejected(tmp_path: Path):
     with pytest.raises(AppError) as exc_info:
         service.login(code)
     assert exc_info.value.code == "INVITE_CODE_EXPIRED"
-    assert "已过期" in exc_info.value.message
+    assert "已经过期" in exc_info.value.message
 
 
 def test_unknown_code_is_rejected(tmp_path: Path):
@@ -261,17 +261,17 @@ def test_tasks_are_isolated_between_sessions(authed_client):
     admin = login(authed_client, "ADMIN-CODE")
     created_codes = authed_client.post(
         "/api/v1/admin/invite-codes",
-        json={"count": 1, "note": "给朋友"},
+        json={"note": "给朋友"},
         headers=headers(admin["token"]),
-    ).json()["codes"]
-    shared_code = created_codes[0]["code"]
+    ).json()["code"]
+    shared_code = created_codes["code"]
 
     # 用两个不同的码代表两个使用者（同一个码下的多次登录共享可见性，见 test_re_login_...）
     second_code = authed_client.post(
         "/api/v1/admin/invite-codes",
-        json={"count": 1},
+        json={},
         headers=headers(admin["token"]),
-    ).json()["codes"][0]["code"]
+    ).json()["code"]["code"]
     first = login(authed_client, shared_code)
     second = login(authed_client, second_code)
 
@@ -316,8 +316,8 @@ def test_task_records_owner(authed_client):
 def test_admin_endpoints_require_admin(authed_client):
     admin = login(authed_client, "ADMIN-CODE")
     code = authed_client.post(
-        "/api/v1/admin/invite-codes", json={"count": 1}, headers=headers(admin["token"])
-    ).json()["codes"][0]["code"]
+        "/api/v1/admin/invite-codes", json={}, headers=headers(admin["token"])
+    ).json()["code"]["code"]
     normal = login(authed_client, code)
 
     assert authed_client.get("/api/v1/admin/invite-codes").status_code == 401
@@ -327,9 +327,15 @@ def test_admin_endpoints_require_admin(authed_client):
     )
 
     listing = authed_client.get("/api/v1/admin/invite-codes", headers=headers(admin["token"])).json()
-    assert listing["codes"][0]["code"] == code
-    assert listing["codes"][0]["max_uses"] == 20
-    assert listing["codes"][0]["uses"] == 1  # 上面普通会话登录过一次
+    # 首行是环境变量里的管理员码，生成码排在后面
+    assert listing["codes"][0]["source"] == "env"
+    assert listing["codes"][0]["role"] == "admin"
+    assert listing["codes"][0]["max_uses"] == 0
+    row = next(item for item in listing["codes"] if item["code"] == code)
+    assert row["max_uses"] == 20
+    assert row["uses"] == 1  # 上面普通会话登录过一次
+    assert row["source"] == "generated"
+    assert listing["defaults"] == {"uses": 20, "days": 30}
 
 
 def test_legacy_task_without_owner_is_not_visible_online(authed_client):
@@ -394,8 +400,8 @@ def test_daily_task_quota_applies_to_normal_code_but_not_admin(settings, user_co
     with TestClient(app) as client:
         admin = login(client, "ADMIN-CODE")
         code = client.post(
-            "/api/v1/admin/invite-codes", json={"count": 1}, headers=headers(admin["token"])
-        ).json()["codes"][0]["code"]
+            "/api/v1/admin/invite-codes", json={}, headers=headers(admin["token"])
+        ).json()["code"]["code"]
         normal = login(client, code)
 
         for _ in range(2):
@@ -437,3 +443,206 @@ def test_pending_task_reports_queue_position(authed_client):
     assert body["queue_ahead"] == 1
     first_body = authed_client.get(f"/api/v1/tasks/{first}", headers=headers(admin["token"])).json()
     assert first_body["queue_ahead"] == 0
+
+
+# ---------------------------------------------------------------------------
+# 阶段 6.6：0=不限次数 / 0=不过期 / 停用 / 来源 / 管理员用量 / 旧数据迁移
+# ---------------------------------------------------------------------------
+
+
+def test_zero_uses_means_unlimited(tmp_path: Path):
+    service = make_service(tmp_path)
+    code = service.create_codes(count=1, uses=0, days=30)[0].code
+
+    assert service.is_unlimited(code) is True
+    assert service.remaining_uses(code) is None
+    for _ in range(50):
+        assert service.login(code).is_admin is False
+    # uses 仍然累加，只用于展示「已用 N」
+    assert service.list_codes()[0].uses == 50
+
+
+def test_zero_days_means_never_expires(tmp_path: Path):
+    service = make_service(tmp_path)
+    item = service.create_codes(count=1, days=0)[0]
+    assert item.expires_at is None
+    assert service.login(item.code).is_admin is False
+
+
+def test_revoked_code_is_rejected(tmp_path: Path):
+    service = make_service(tmp_path)
+    code = service.create_codes(count=1)[0].code
+    assert service.login(code).is_admin is False
+
+    service.revoke_code(code)
+    with pytest.raises(AppError) as exc_info:
+        service.login(code)
+    assert exc_info.value.code == "INVITE_CODE_REVOKED"
+    assert "停用" in exc_info.value.message
+
+    service.revoke_code(code)  # 幂等：重复停用不报错
+    assert any(item.revoked_at for item in service.list_codes())
+
+
+def test_env_code_cannot_be_revoked(tmp_path: Path):
+    service = make_service(tmp_path)
+    with pytest.raises(AppError) as exc_info:
+        service.revoke_code("ADMIN-CODE")
+    assert exc_info.value.code == "INVITE_ENV_IMMUTABLE"
+
+
+def test_admin_usage_is_counted_without_plaintext(tmp_path: Path):
+    service = make_service(tmp_path)
+    for _ in range(3):
+        service.login("ADMIN-CODE")
+
+    entry = service.admin_entry()
+    assert entry is not None
+    assert entry.uses == 3
+    assert entry.max_uses == 0
+    assert entry.source == "env"
+    # 管理员码绝不落库（只存哈希）
+    assert "ADMIN-CODE" not in service.store_path.read_text(encoding="utf-8")
+
+
+def test_created_by_is_masked(tmp_path: Path):
+    service = make_service(tmp_path)
+    item = service.create_codes(count=1, created_by="ADMIN-CODE")[0]
+    assert item.created_by == "ADMI****DE"
+    assert "ADMIN-CODE" not in service.store_path.read_text(encoding="utf-8")
+
+
+def test_legacy_store_is_migrated(tmp_path: Path):
+    """v1 数据（无 source / 无 admin_usage / expires_at 为字符串）必须能读、能写、不丢。"""
+    path = tmp_path / "invite-codes.json"
+    path.write_text(
+        json.dumps(
+            {
+                "codes": [
+                    {
+                        "code": "OLD1-CODE",
+                        "max_uses": 20,
+                        "uses": 2,
+                        "created_at": "2026-01-01T00:00:00+08:00",
+                        "expires_at": "2099-01-01T00:00:00+08:00",
+                        "note": "老数据",
+                    }
+                ],
+                "sessions": [{"legacy": True}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    service = InviteService(path, admin_code="ADMIN-CODE")
+
+    items = service.list_codes()
+    assert len(items) == 1
+    assert items[0].source == "generated"
+    assert items[0].revoked_at is None
+    assert service.login("OLD1-CODE").is_admin is False
+
+    store = json.loads(path.read_text(encoding="utf-8"))
+    assert store["schema_version"] == 2
+    assert store["codes"][0]["code"] == "OLD1-CODE"
+    assert store["codes"][0]["uses"] == 3
+    assert store["admin_usage"] == {}
+
+
+def test_login_response_exposes_badge_fields(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    assert admin["code_masked"] == "ADMI****DE"
+    assert admin["unlimited"] is True
+    assert admin["remaining_uses"] is None
+
+    created = authed_client.post(
+        "/api/v1/admin/invite-codes",
+        json={"uses": 5, "days": 7},
+        headers=headers(admin["token"]),
+    ).json()["code"]
+    normal = login(authed_client, created["code"])
+    assert normal["unlimited"] is False
+    assert normal["remaining_uses"] == 4
+    assert normal["code_masked"].endswith(created["code"][-2:])
+
+
+def test_admin_can_revoke_generated_code(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    code = authed_client.post(
+        "/api/v1/admin/invite-codes", json={}, headers=headers(admin["token"])
+    ).json()["code"]["code"]
+    assert login(authed_client, code)["token"]
+
+    revoked = authed_client.post(
+        f"/api/v1/admin/invite-codes/{code}/revoke", headers=headers(admin["token"])
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["code"]["revoked_at"]
+
+    blocked = authed_client.post("/api/v1/auth/login", json={"code": code})
+    assert blocked.status_code == 401
+    assert blocked.json()["error"]["code"] == "INVITE_CODE_REVOKED"
+
+
+def test_admin_cannot_revoke_env_code(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    response = authed_client.post(
+        "/api/v1/admin/invite-codes/ADMIN-CODE/revoke", headers=headers(admin["token"])
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVITE_ENV_IMMUTABLE"
+    assert "服务端配置" in response.json()["error"]["message"]
+
+
+def test_revoke_requires_admin(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    code = authed_client.post(
+        "/api/v1/admin/invite-codes", json={}, headers=headers(admin["token"])
+    ).json()["code"]["code"]
+    normal = login(authed_client, code)
+
+    assert authed_client.post(f"/api/v1/admin/invite-codes/{code}/revoke").status_code == 401
+    assert (
+        authed_client.post(
+            f"/api/v1/admin/invite-codes/{code}/revoke", headers=headers(normal["token"])
+        ).status_code
+        == 403
+    )
+
+
+def test_admin_list_unlimited_row_and_admin_row(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    unlimited = authed_client.post(
+        "/api/v1/admin/invite-codes",
+        json={"uses": 0, "days": 0, "note": "不限"},
+        headers=headers(admin["token"]),
+    ).json()["code"]
+    assert unlimited["max_uses"] == 0
+    assert unlimited["remaining"] is None
+    assert unlimited["expires_at"] is None
+    assert unlimited["active"] is True
+    assert unlimited["note"] == "不限"
+
+    listing = authed_client.get(
+        "/api/v1/admin/invite-codes", headers=headers(admin["token"])
+    ).json()
+    admin_row = listing["codes"][0]
+    assert admin_row["source"] == "env"
+    assert admin_row["role"] == "admin"
+    assert admin_row["max_uses"] == 0
+    assert admin_row["remaining"] is None
+    assert admin_row["expires_at"] is None
+    assert admin_row["active"] is True
+    assert admin_row["uses"] >= 1
+
+
+def test_create_invite_validates_ranges(authed_client):
+    admin = login(authed_client, "ADMIN-CODE")
+    too_many = authed_client.post(
+        "/api/v1/admin/invite-codes", json={"uses": 1001}, headers=headers(admin["token"])
+    )
+    assert too_many.status_code == 422
+    negative = authed_client.post(
+        "/api/v1/admin/invite-codes", json={"days": -1}, headers=headers(admin["token"])
+    )
+    assert negative.status_code == 422

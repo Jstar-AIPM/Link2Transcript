@@ -201,8 +201,8 @@ def get_settings() -> Settings:
         require_auth=(
             _bool("REQUIRE_AUTH", False) if os.getenv("REQUIRE_AUTH", "").strip() else None
         ),
-        invite_valid_days=max(1, int(os.getenv("INVITE_VALID_DAYS", "30"))),
-        invite_max_uses=max(1, int(os.getenv("INVITE_MAX_USES", "20"))),
+        invite_valid_days=max(0, int(os.getenv("INVITE_VALID_DAYS", "30"))),
+        invite_max_uses=max(0, int(os.getenv("INVITE_MAX_USES", "20"))),
         max_tasks_per_code_per_day=max(
             0, int(os.getenv("MAX_TASKS_PER_CODE_PER_DAY", "30"))
         ),

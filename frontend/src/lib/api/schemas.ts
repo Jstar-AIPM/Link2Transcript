@@ -113,14 +113,58 @@ export const loginRequestSchema = z.object({
   code: z.string().min(1).max(128),
 });
 
-export const sessionResponseSchema = z.object({
-  token: z.string(),
+export const inviteStatusSchema = z.object({
+  /** 掩码后的邀请码（顶栏展示用，例如 ABCD****GH） */
+  code_masked: z.string().default(""),
+  is_admin: z.boolean().default(false),
+  /** 是否不限次数（管理员码恒为 true） */
+  unlimited: z.boolean().default(false),
+  /** 剩余可用次数；不限次数为 null */
+  remaining_uses: z.number().nullable().default(null),
   expires_at: z.string(),
-  is_admin: z.boolean(),
-  remaining_uses: z.number().nullable(),
+});
+export type InviteStatus = z.infer<typeof inviteStatusSchema>;
+
+export const sessionResponseSchema = inviteStatusSchema.extend({
+  token: z.string(),
 });
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
 export type PublicConfig = z.infer<typeof publicConfigSchema>;
+
+/* ---------------------------------------------------------------- 邀请码管理 */
+
+export const inviteCodeSummarySchema = z.object({
+  code: z.string(),
+  masked: z.string(),
+  source: z.enum(["env", "generated"]),
+  role: z.enum(["admin", "user"]),
+  max_uses: z.number(),
+  uses: z.number(),
+  /** 剩余次数；不限次数为 null */
+  remaining: z.number().nullable(),
+  created_at: z.string().nullable(),
+  expires_at: z.string().nullable(),
+  note: z.string(),
+  revoked_at: z.string().nullable(),
+  /** 当前是否可用（未停用、未过期、未用尽） */
+  active: z.boolean(),
+});
+export type InviteCodeSummary = z.infer<typeof inviteCodeSummarySchema>;
+
+export const inviteCodeListSchema = z.object({
+  codes: z.array(inviteCodeSummarySchema),
+  defaults: z.object({ uses: z.number(), days: z.number() }),
+});
+export type InviteCodeList = z.infer<typeof inviteCodeListSchema>;
+
+export const createdInviteCodeSchema = z.object({ code: inviteCodeSummarySchema });
+export type CreatedInviteCode = z.infer<typeof createdInviteCodeSchema>;
+
+export const createInviteCodeRequestSchema = z.object({
+  uses: z.number().int().min(0).max(1000),
+  days: z.number().int().min(0).max(3650),
+  note: z.string().max(80),
+});
 
 export const transcriptResultSchema = z.object({
   schema_version: z.number(),

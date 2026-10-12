@@ -193,26 +193,53 @@ class SessionResponse(BaseModel):
     token: str
     expires_at: datetime
     is_admin: bool
-    #: 该邀请码剩余可用次数；管理员码为 None（不限次）
+    #: 该邀请码剩余可用次数；不限次数（含管理员码）为 None
     remaining_uses: int | None = None
+    #: 掩码后的邀请码（顶栏展示用，例如 ABCD****GH）
+    code_masked: str = ""
+    #: 是否不限次数（管理员码恒为 True）
+    unlimited: bool = False
 
 
 class InviteCodeSummary(BaseModel):
     code: str
+    masked: str
+    #: env（环境变量预置）/ generated（管理员生成）
+    source: str = "generated"
+    #: admin / user
+    role: str = "user"
     max_uses: int
     uses: int
-    created_at: datetime
-    expires_at: datetime
+    #: 剩余次数；不限次数为 None
+    remaining: int | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
     note: str = ""
+    revoked_at: datetime | None = None
+    #: 是否当前可用（未停用、未过期、未用尽）
+    active: bool = True
+
+
+class InviteDefaults(BaseModel):
+    uses: int
+    days: int
 
 
 class CreateInviteCodesRequest(BaseModel):
-    count: int = Field(default=1, ge=1, le=20)
-    note: str = Field(default="", max_length=64)
+    #: 次数；0 表示不限次数；省略时用服务端默认值
+    uses: int | None = Field(default=None, ge=0, le=1000)
+    #: 有效天数；0 表示不过期；省略时用服务端默认值
+    days: int | None = Field(default=None, ge=0, le=3650)
+    note: str = Field(default="", max_length=80)
 
 
-class CreateInviteCodesResponse(BaseModel):
+class InviteCodeListResponse(BaseModel):
     codes: list[InviteCodeSummary]
+    defaults: InviteDefaults
+
+
+class CreateInviteCodeResponse(BaseModel):
+    code: InviteCodeSummary
 
 
 class SegmentItem(BaseModel):

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { PageContainer } from "@/components/layout/PageContainer";
+import { InviteBadge } from "@/features/auth/InviteBadge";
 import { cn } from "@/lib/utils";
 
 /** 顶栏：滚动后出现 1px hairline（与 03 工具同构）。 */
@@ -36,7 +37,10 @@ export function TopBar({ children }: { children?: ReactNode }) {
             逐字稿提取器
           </Link>
           <div className="flex-1" />
-          <div className="flex items-center gap-2.5">{children}</div>
+          <div className="flex items-center gap-2.5">
+            {children}
+            <InviteBadge />
+          </div>
         </div>
       </PageContainer>
     </header>

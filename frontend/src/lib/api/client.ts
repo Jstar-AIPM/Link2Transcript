@@ -8,7 +8,7 @@
  *    只有网络层失败才使用前端兜底文案；
  * 4. 单次请求 30 秒超时（阶段 3 实测：机器高负载时接口可能十几秒才返回）。
  */
-import { clearToken, readToken } from "@/lib/session";
+import { clearAuth, readToken } from "@/features/auth/storage";
 import {
   apiErrorEnvelopeSchema,
   publicConfigSchema,
@@ -24,6 +24,11 @@ import {
   type SessionResponse,
   sessionResponseSchema,
   loginRequestSchema,
+  inviteCodeListSchema,
+  createdInviteCodeSchema,
+  createInviteCodeRequestSchema,
+  type InviteCodeList,
+  type CreatedInviteCode,
 } from "./schemas";
 import type { z } from "zod";
 
@@ -99,7 +104,7 @@ async function request<T>(
     if (envelope.success) {
       const { code, message, trace_id } = envelope.data.error;
       // 会话失效：立刻清掉本地令牌，让界面回到登录页
-      if (response.status === 401) clearToken();
+      if (response.status === 401) clearAuth("登录状态已失效，请重新输入邀请码");
       throw new ApiError(code, message, response.status, trace_id);
     }
     throw new ApiError("UNEXPECTED_ERROR", MALFORMED_FALLBACK_MESSAGE, response.status);
@@ -130,6 +135,26 @@ export const api = {
   /** 校验当前会话是否仍然有效 */
   me(): Promise<SessionResponse> {
     return request("/auth/me", sessionResponseSchema);
+  },
+
+  /* ---------------------------------------------------------- 邀请码管理（仅管理员） */
+
+  listInviteCodes(): Promise<InviteCodeList> {
+    return request("/admin/invite-codes", inviteCodeListSchema);
+  },
+
+  createInviteCode(input: { uses: number; days: number; note: string }): Promise<CreatedInviteCode> {
+    return request("/admin/invite-codes", createdInviteCodeSchema, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(createInviteCodeRequestSchema.parse(input)),
+    });
+  },
+
+  revokeInviteCode(code: string): Promise<CreatedInviteCode> {
+    return request(`/admin/invite-codes/${encodeURIComponent(code)}/revoke`, createdInviteCodeSchema, {
+      method: "POST",
+    });
   },
 
   /** 按链接创建任务（B 站） */
